@@ -12,176 +12,286 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
+from dotenv import load_dotenv
 
 from apify import Actor
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import ScraperSettings
+load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SemanticMatcher  (same model, no Django dependency)
+# ─────────────────────────────────────────────────────────────────────────────# ─────────────────────────────────────────────────────────────────────────────
+# Semantic Job Title Matcher
 # ─────────────────────────────────────────────────────────────────────────────
-import torch
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.util import batch_to_device, cos_sim
+if not os.getenv("APP_ENV") == "local":
+    import torch
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.util import batch_to_device, cos_sim
 
-_UNIVERSAL_ABBR: Dict[str, str] = {
-    r'\bsr\.?\b':    'senior',
-    r'\bjr\.?\b':    'junior',
-    r'\bmgr\.?\b':   'manager',
-    r'\bdir\.?\b':   'director',
-    r'\bassoc\.?\b': 'associate',
-    r'\bspec\.?\b':  'specialist',
-    r'\bcoord\.?\b': 'coordinator',
-    r'\beng\.?\b':   'engineer',
-    r'\bdev\.?\b':   'developer',
-    r'\barch\.?\b':  'architect',
-    r'\brep\.?\b':   'representative',
-    r'\bvp\b':       'vice president',
-    r'\bsvp\b':      'senior vice president',
-    r'\bcto\b':      'chief technology officer',
-    r'\bceo\b':      'chief executive officer',
-    r'\bcoo\b':      'chief operating officer',
-    r'\bcfo\b':      'chief financial officer',
-}
+    # ── Universal grammar abbreviations — safe for every domain ─────────────
+    _UNIVERSAL_ABBR: Dict[str, str] = {
+        r'\bsr\.?\b':     'senior',
+        r'\bjr\.?\b':     'junior',
+        r'\bmgr\.?\b':    'manager',
+        r'\bdir\.?\b':    'director',
+        r'\bassoc\.?\b':  'associate',
+        r'\bspec\.?\b':   'specialist',
+        r'\bcoord\.?\b':  'coordinator',
+        r'\beng\.?\b':    'engineer',
+        r'\bdev\.?\b':    'developer',
+        r'\barch\.?\b':   'architect',
+        r'\brep\.?\b':    'representative',
+        r'\bvp\b':        'vice president',
+        r'\bsvp\b':       'senior vice president',
+        r'\bcto\b':       'chief technology officer',
+        r'\bceo\b':       'chief executive officer',
+        r'\bcoo\b':       'chief operating officer',
+        r'\bcfo\b':       'chief financial officer',
+    }
 
-_NOISE_RE = re.compile(
-    r'\(.*?\)|\[.*?\]'
-    r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
-    r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
-    r'|urgent|immediate|opening|opportunity|position|role'
-    r'|new grad|entry.level|experienced)\b',
-    re.IGNORECASE,
-)
-_SEP_RE        = re.compile(r'[-–—|·•/\\]')
-_WHITESPACE_RE = re.compile(r'\s+')
-
-
-def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
-    abbr_map: Dict[str, str] = {}
-    paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
-    for m in paren_re.finditer(about_me):
-        left, right = m.group(1).strip(), m.group(2).strip()
-        left_score  = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
-        right_score = sum(1 for c in right if c.isupper()) / max(len(right), 1)
-        if len(left) <= 8 and left_score >= right_score:
-            abbr, expansion = left, right
-        elif len(right) <= 8 and right_score > left_score:
-            abbr, expansion = right, left
-        else:
-            continue
-        if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
-            abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
-
-    camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
-    for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
-        parts  = camel_split.split(token)
-        spaced = ' '.join(parts).lower()
-        if spaced != token.lower() and len(parts) > 1:
-            abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
-
-    symbol_re = re.compile(
-        r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b'
-        r'|(\.[A-Z][A-Za-z0-9]+)'
+    # ── Noise stripped from every job title ──────────────────────────────────
+    _NOISE_RE = re.compile(
+        r'\(.*?\)|\[.*?\]'
+        r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
+        r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
+        r'|urgent|immediate|opening|opportunity|position|role'
+        r'|new grad|entry.level|experienced)\b',
+        re.IGNORECASE,
     )
-    for m in symbol_re.finditer(about_me):
-        symbol = (m.group(1) or m.group(2)).strip()
-        if not symbol or len(symbol) > 12:
-            continue
-        normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
-        if normalized and normalized != symbol.lower():
-            abbr_map[re.escape(symbol)] = normalized
-
-    return abbr_map
+    _SEP_RE        = re.compile(r'[-–—|·•/\\]')
+    _WHITESPACE_RE = re.compile(r'\s+')
 
 
-def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
-    compiled = []
-    for pattern, replacement in abbr_map.items():
-        try:
-            compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
-        except re.error:
-            pass
-    return compiled
+    def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
+        """
+        Learns abbreviations purely from the user's own about_me text.
+        No hardcoded domain knowledge — works for ANY field.
+
+        Detects:
+          1. ABBR (Full Form) / Full Form (ABBR)  — parenthetical definitions
+          2. CamelCase tokens                      — MLOps → ml ops
+          3. Special-char symbols                  — C# → c, .NET → net, M&A → ma
+        """
+        abbr_map: Dict[str, str] = {}
+
+        # ── Parenthetical definitions ─────────────────────────────────────────
+        paren_re = re.compile(
+            r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)'
+        )
+        for m in paren_re.finditer(about_me):
+            left  = m.group(1).strip()
+            right = m.group(2).strip()
+
+            left_score  = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
+            right_score = sum(1 for c in right if c.isupper()) / max(len(right), 1)
+
+            if len(left) <= 8 and left_score >= right_score:
+                abbr, expansion = left, right
+            elif len(right) <= 8 and right_score > left_score:
+                abbr, expansion = right, left
+            else:
+                continue
+
+            if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
+                abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
+
+        # ── CamelCase → spaced words ──────────────────────────────────────────
+        camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+        for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
+            parts  = camel_split.split(token)
+            spaced = ' '.join(parts).lower()
+            if spaced != token.lower() and len(parts) > 1:
+                abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
+
+        # ── Special-char symbols ──────────────────────────────────────────────
+        symbol_re = re.compile(
+            r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b'
+            r'|(\.[A-Z][A-Za-z0-9]+)'
+        )
+        for m in symbol_re.finditer(about_me):
+            symbol = (m.group(1) or m.group(2)).strip()
+            if not symbol or len(symbol) > 12:
+                continue
+            normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
+            if normalized and normalized != symbol.lower():
+                abbr_map[re.escape(symbol)] = normalized
+
+        return abbr_map
 
 
-class SemanticMatcher:
-    MODEL_NAME = "TechWolf/JobBERT-v2"
-
-    def __init__(self, model_name: str = MODEL_NAME):
-        self._model          = SentenceTransformer(model_name)
-        self._lock           = asyncio.Lock()
-        self._cached_keywords: Optional[str] = None
-        self._query_embeddings               = None
-        self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
-
-    def _encode(self, texts: List[str]):
-        features = self._model.tokenize(texts)
-        features = batch_to_device(features, self._model.device)
-        features["text_keys"] = ["anchor"]
-        with torch.no_grad():
-            out = self._model.forward(features)
-        emb = out["sentence_embedding"]
-        return torch.nn.functional.normalize(emb, p=2, dim=1)
-
-    def _refresh_if_needed(self, user_keywords: str) -> None:
-        if user_keywords == self._cached_keywords:
-            return
-        abbr_map            = _extract_abbr_from_user_text(user_keywords)
-        self._compiled_abbr = _compile_patterns(abbr_map)
-        tokens = [
-            t.strip()
-            for t in re.split(r'[\n\r,|/•·]+', user_keywords)
-            if t.strip() and len(t.strip()) > 1
-        ]
-        if not tokens:
-            tokens = [user_keywords.strip()]
-        seen, unique_tokens = set(), []
-        for t in tokens:
-            k = t.lower()
-            if k not in seen:
-                seen.add(k)
-                unique_tokens.append(t)
-        queries = [f"Job title: {t}" for t in unique_tokens]
-        self._query_embeddings = self._encode(queries)
-        self._cached_keywords  = user_keywords
-
-    def _clean_title(self, title: str) -> str:
-        t = title.lower()
-        for pattern, replacement in _UNIVERSAL_ABBR.items():
-            t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
-        for compiled_re, replacement in self._compiled_abbr:
-            t = compiled_re.sub(replacement, t)
-        t = _NOISE_RE.sub(' ', t)
-        t = _SEP_RE.sub(' ', t)
-        return _WHITESPACE_RE.sub(' ', t).strip()
-
-    def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
-        self._refresh_if_needed(user_keywords)
-        cleaned          = [self._clean_title(t) for t in job_titles]
-        title_embeddings = self._encode(cleaned)
-        sim_matrix       = cos_sim(self._query_embeddings, title_embeddings)
-        best_scores      = sim_matrix.max(dim=0).values.cpu().numpy()
-        return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
-
-    async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
-        if not user_keywords or not job_titles:
-            return []
-        async with self._lock:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
+    def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
+        compiled = []
+        for pattern, replacement in abbr_map.items():
+            try:
+                compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
+            except re.error:
+                pass
+        return compiled
 
 
-_matcher = SemanticMatcher()
+    class SemanticMatcher:
+        # ── JobBERT-v2: purpose-built for job title similarity ────────────────
+        # Trained on 5.5M+ real job title pairs (TalentCLEF MAP@10 = 0.6457).
+        MODEL_NAME = "TechWolf/JobBERT-v2"
+
+        def __init__(self, model_name: str = MODEL_NAME):
+            self._model                                      = SentenceTransformer(model_name)
+            self._lock                                       = asyncio.Lock()
+            self._cached_keywords: Optional[str]             = None
+            self._query_embeddings                           = None   # shape (n_queries, dim)
+            self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
+
+        # ── JobBERT-v2 requires this custom encode ────────────────────────────
+        def _encode(self, texts: List[str]):
+            """
+            Forward pass through JobBERT-v2's job-specific projection head.
+            text_keys=["anchor"] tells the model these are the primary texts
+            (vs. positive/negative pairs used during contrastive training).
+            Returns normalized embeddings ready for cosine similarity.
+            """
+            features = self._model.tokenize(texts)
+            features = batch_to_device(features, self._model.device)
+            features["text_keys"] = ["anchor"]
+            with torch.no_grad():
+                out = self._model.forward(features)
+            # Normalize so cosine_sim == dot_product (consistent with training)
+            emb = out["sentence_embedding"]
+            emb = torch.nn.functional.normalize(emb, p=2, dim=1)
+            return emb
+
+        def _refresh_if_needed(self, user_keywords: str) -> None:
+            """
+            Re-learn abbreviations + re-encode ALL query embeddings only when
+            about_me changes. One embedding per role line — not one averaged blob.
+            """
+            if user_keywords == self._cached_keywords:
+                return
+
+            # ── Abbreviation learning (unchanged from original) ───────────────
+            abbr_map            = _extract_abbr_from_user_text(user_keywords)
+            self._compiled_abbr = _compile_patterns(abbr_map)
+
+            # ── Parse about_me into individual role lines ─────────────────────
+            # Split on newlines, commas, pipes, bullets — whatever the user typed.
+            # Each non-empty token becomes its own query embedding.
+            tokens = [
+                t.strip()
+                for t in re.split(r'[\n\r,|/•·]+', user_keywords)
+                if t.strip() and len(t.strip()) > 1
+            ]
+
+            if not tokens:
+                # Fallback: treat entire about_me as one query
+                tokens = [user_keywords.strip()]
+
+            # Deduplicate while preserving order
+            seen, unique_tokens = set(), []
+            for t in tokens:
+                k = t.lower()
+                if k not in seen:
+                    seen.add(k)
+                    unique_tokens.append(t)
+
+            # One focused query per role — no dilution from averaging
+            queries = [f"Job title: {t}" for t in unique_tokens]
+
+            # Encode all queries in a single batch call
+            self._query_embeddings = self._encode(queries)  # shape (n_queries, dim)
+            self._cached_keywords  = user_keywords
+
+        def _clean_title(self, title: str) -> str:
+            """
+            Normalize a job title:
+              1. Universal grammar abbreviations  (Sr → senior, VP → vice president)
+              2. User-derived abbreviations        (learned from their about_me only)
+              3. Noise stripping                   (location, work-type, punctuation)
+            Zero hardcoded domain knowledge.
+            """
+            t = title.lower()
+
+            for pattern, replacement in _UNIVERSAL_ABBR.items():
+                t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+
+            for compiled_re, replacement in self._compiled_abbr:
+                t = compiled_re.sub(replacement, t)
+
+            t = _NOISE_RE.sub(' ', t)
+            t = _SEP_RE.sub(' ', t)
+            t = _WHITESPACE_RE.sub(' ', t).strip()
+            return t
+
+        def _score(
+            self,
+            user_keywords: str,
+            job_titles:    List[str],
+        ) -> List[float]:
+            """
+            Score a batch of job titles against the user's task.
+
+            Steps:
+              1. Refresh query embeddings if about_me changed.
+              2. Clean + encode all titles in one batch.
+              3. Compute cosine similarity matrix (n_queries × n_titles).
+              4. Max-pool: each title gets score from its best-matching query.
+              5. Clip negatives → multiply by 100 → round to 2dp.
+            """
+            self._refresh_if_needed(user_keywords)
+
+            cleaned = [self._clean_title(t) for t in job_titles]
+
+            # Encode all job titles in a single forward pass
+            title_embeddings = self._encode(cleaned)  # shape (n_titles, dim)
+
+            # Similarity matrix: rows = queries, cols = titles
+            # cos_sim returns shape (n_queries, n_titles)
+            sim_matrix = cos_sim(self._query_embeddings, title_embeddings)
+
+            # Max-pool over queries: each title gets its best matching query score
+            # Shape: (n_titles,)
+            best_scores = sim_matrix.max(dim=0).values
+            best_scores = best_scores.cpu().numpy()
+
+            # Clip negatives, scale to percentage
+            return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
+
+        async def match(
+            self,
+            user_keywords: str,
+            job_titles:    List[str],
+        ) -> List[float]:
+            """
+            Async entry point — offloads CPU-bound scoring to a thread executor
+            so the event loop stays unblocked during model inference.
+            """
+            if not user_keywords or not job_titles:
+                return []
+
+            async with self._lock:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(
+                    None, self._score, user_keywords, job_titles
+                )
 
 
-async def get_match_percentages(
-    user_keywords: str,
-    job_titles: List[str],
-) -> List[float]:
-    return await _matcher.match(user_keywords, job_titles)
+    # ── Singleton — one model loaded for the entire process lifetime ──────────
+    _matcher = SemanticMatcher()
 
+
+    async def get_match_percentages(
+        about_me: str,
+        job_titles:    List[str],
+    ) -> List[float]:
+        return await _matcher.match(about_me, job_titles)
+
+if os.getenv("APP_ENV") == "local":
+    async def get_match_percentages(
+        about_me: str,
+        job_titles:    List[str],
+    ) -> List[float]:
+        return [random.randint(0, 100) for _ in range(len(job_titles))]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ScraperConfig  (Apify version — no Django fields)
