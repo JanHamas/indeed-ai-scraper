@@ -1,0 +1,683 @@
+"""
+src/helpers.py
+All dataclasses, config builder, and utility functions.
+Django-free: logging goes to Actor.log, storage to Apify KV store / dataset.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import random
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from apify import Actor
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+from .config import ScraperSettings
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SemanticMatcher  (same model, no Django dependency)
+# ─────────────────────────────────────────────────────────────────────────────
+import torch
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import batch_to_device, cos_sim
+
+_UNIVERSAL_ABBR: Dict[str, str] = {
+    r'\bsr\.?\b':    'senior',
+    r'\bjr\.?\b':    'junior',
+    r'\bmgr\.?\b':   'manager',
+    r'\bdir\.?\b':   'director',
+    r'\bassoc\.?\b': 'associate',
+    r'\bspec\.?\b':  'specialist',
+    r'\bcoord\.?\b': 'coordinator',
+    r'\beng\.?\b':   'engineer',
+    r'\bdev\.?\b':   'developer',
+    r'\barch\.?\b':  'architect',
+    r'\brep\.?\b':   'representative',
+    r'\bvp\b':       'vice president',
+    r'\bsvp\b':      'senior vice president',
+    r'\bcto\b':      'chief technology officer',
+    r'\bceo\b':      'chief executive officer',
+    r'\bcoo\b':      'chief operating officer',
+    r'\bcfo\b':      'chief financial officer',
+}
+
+_NOISE_RE = re.compile(
+    r'\(.*?\)|\[.*?\]'
+    r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
+    r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
+    r'|urgent|immediate|opening|opportunity|position|role'
+    r'|new grad|entry.level|experienced)\b',
+    re.IGNORECASE,
+)
+_SEP_RE        = re.compile(r'[-–—|·•/\\]')
+_WHITESPACE_RE = re.compile(r'\s+')
+
+
+def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
+    abbr_map: Dict[str, str] = {}
+    paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
+    for m in paren_re.finditer(about_me):
+        left, right = m.group(1).strip(), m.group(2).strip()
+        left_score  = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
+        right_score = sum(1 for c in right if c.isupper()) / max(len(right), 1)
+        if len(left) <= 8 and left_score >= right_score:
+            abbr, expansion = left, right
+        elif len(right) <= 8 and right_score > left_score:
+            abbr, expansion = right, left
+        else:
+            continue
+        if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
+            abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
+
+    camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+    for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
+        parts  = camel_split.split(token)
+        spaced = ' '.join(parts).lower()
+        if spaced != token.lower() and len(parts) > 1:
+            abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
+
+    symbol_re = re.compile(
+        r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b'
+        r'|(\.[A-Z][A-Za-z0-9]+)'
+    )
+    for m in symbol_re.finditer(about_me):
+        symbol = (m.group(1) or m.group(2)).strip()
+        if not symbol or len(symbol) > 12:
+            continue
+        normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
+        if normalized and normalized != symbol.lower():
+            abbr_map[re.escape(symbol)] = normalized
+
+    return abbr_map
+
+
+def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
+    compiled = []
+    for pattern, replacement in abbr_map.items():
+        try:
+            compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
+        except re.error:
+            pass
+    return compiled
+
+
+class SemanticMatcher:
+    MODEL_NAME = "TechWolf/JobBERT-v2"
+
+    def __init__(self, model_name: str = MODEL_NAME):
+        self._model          = SentenceTransformer(model_name)
+        self._lock           = asyncio.Lock()
+        self._cached_keywords: Optional[str] = None
+        self._query_embeddings               = None
+        self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
+
+    def _encode(self, texts: List[str]):
+        features = self._model.tokenize(texts)
+        features = batch_to_device(features, self._model.device)
+        features["text_keys"] = ["anchor"]
+        with torch.no_grad():
+            out = self._model.forward(features)
+        emb = out["sentence_embedding"]
+        return torch.nn.functional.normalize(emb, p=2, dim=1)
+
+    def _refresh_if_needed(self, user_keywords: str) -> None:
+        if user_keywords == self._cached_keywords:
+            return
+        abbr_map            = _extract_abbr_from_user_text(user_keywords)
+        self._compiled_abbr = _compile_patterns(abbr_map)
+        tokens = [
+            t.strip()
+            for t in re.split(r'[\n\r,|/•·]+', user_keywords)
+            if t.strip() and len(t.strip()) > 1
+        ]
+        if not tokens:
+            tokens = [user_keywords.strip()]
+        seen, unique_tokens = set(), []
+        for t in tokens:
+            k = t.lower()
+            if k not in seen:
+                seen.add(k)
+                unique_tokens.append(t)
+        queries = [f"Job title: {t}" for t in unique_tokens]
+        self._query_embeddings = self._encode(queries)
+        self._cached_keywords  = user_keywords
+
+    def _clean_title(self, title: str) -> str:
+        t = title.lower()
+        for pattern, replacement in _UNIVERSAL_ABBR.items():
+            t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+        for compiled_re, replacement in self._compiled_abbr:
+            t = compiled_re.sub(replacement, t)
+        t = _NOISE_RE.sub(' ', t)
+        t = _SEP_RE.sub(' ', t)
+        return _WHITESPACE_RE.sub(' ', t).strip()
+
+    def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+        self._refresh_if_needed(user_keywords)
+        cleaned          = [self._clean_title(t) for t in job_titles]
+        title_embeddings = self._encode(cleaned)
+        sim_matrix       = cos_sim(self._query_embeddings, title_embeddings)
+        best_scores      = sim_matrix.max(dim=0).values.cpu().numpy()
+        return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
+
+    async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+        if not user_keywords or not job_titles:
+            return []
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
+
+
+_matcher = SemanticMatcher()
+
+
+async def get_match_percentages(
+    user_keywords: str,
+    job_titles: List[str],
+) -> List[float]:
+    return await _matcher.match(user_keywords, job_titles)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ScraperConfig  (Apify version — no Django fields)
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class ScraperConfig:
+    # Task settings
+    about_me:             str
+    ignore_companies:     List[str]
+    ignore_related:       List[str]
+    concurrency:          int
+    url_queue:            List[str]
+    max_jobs:             int
+    per_company_jobs:     int
+    min_match_percentage: int
+
+    # Google Sheets (optional)
+    google_sheet_url: str = ""
+    sheet_name:       str = "Indeed Jobs"
+
+    # Browser
+    headless:     bool = True
+    proxy_config: dict = field(default_factory=dict)
+
+    # Runtime state
+    processed_uids: Set[str] = field(default_factory=set)
+
+    # Internal tracking
+    ignored_companies_seen:    Set[str]   = field(default_factory=set)
+    new_processed_company_jobs: List[str] = field(default_factory=list)
+    extracted_jobs_counter:    int        = field(default=0, init=False)
+    _saved_jobs:               List[dict] = field(default_factory=list, init=False)  # for GSheet
+
+    # Locks (created lazily — dataclass __post_init__)
+    _lock:            asyncio.Lock = field(default=None, init=False, repr=False)
+    _context_lock:    asyncio.Lock = field(default=None, init=False, repr=False)
+    _uid_buffer_lock: asyncio.Lock = field(default=None, init=False, repr=False)
+
+    # Shared batch tracking
+    _context_requests: Dict[int, int] = field(default_factory=dict, init=False)
+    _uid_buffer:       List[str]      = field(default_factory=list, init=False)
+    _saved_account_ids: Set[int]      = field(default_factory=set, init=False)
+
+    # ── Lock properties ───────────────────────────────────────────────────────
+    @property
+    def tracking_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    @property
+    def context_lock(self) -> asyncio.Lock:
+        if self._context_lock is None:
+            self._context_lock = asyncio.Lock()
+        return self._context_lock
+
+    @property
+    def uid_lock(self) -> asyncio.Lock:
+        if self._uid_buffer_lock is None:
+            self._uid_buffer_lock = asyncio.Lock()
+        return self._uid_buffer_lock
+
+    # ── UID buffer ────────────────────────────────────────────────────────────
+    async def buffer_uids(self, uids: list) -> None:
+        async with self.uid_lock:
+            self._uid_buffer.extend(uids)
+
+    async def flush_uid_buffer(self) -> list:
+        async with self.uid_lock:
+            uids = self._uid_buffer.copy()
+            self._uid_buffer.clear()
+            return uids
+
+    # ── Job gate ──────────────────────────────────────────────────────────────
+    async def try_add_job(self, uid: str, company_name: str) -> bool:
+        async with self.tracking_lock:
+            if self.extracted_jobs_counter >= self.max_jobs:
+                return False
+            if uid in self.processed_uids:
+                return False
+            if self.new_processed_company_jobs.count(company_name) >= self.per_company_jobs:
+                return False
+            if company_name in self.ignored_companies_seen:
+                self.processed_uids.add(uid)
+                return False
+            matched_rule = next(
+                (ic for ic in self.ignore_companies
+                 if re.search(r'\b' + re.escape(ic) + r'\b', company_name, re.IGNORECASE)),
+                None,
+            )
+            if matched_rule:
+                self.ignored_companies_seen.add(company_name)
+                self.processed_uids.add(uid)
+                return False
+            self.processed_uids.add(uid)
+            self.new_processed_company_jobs.append(company_name)
+            return True
+
+    async def confirm_filtered_jobs(
+        self, links: list, percentages: list
+    ) -> tuple[list, list]:
+        async with self.tracking_lock:
+            remaining     = self.max_jobs - self.extracted_jobs_counter
+            if remaining <= 0:
+                return [], []
+            accepted_count = min(len(links), remaining)
+            self.extracted_jobs_counter += accepted_count
+            return links[:accepted_count], percentages[:accepted_count]
+
+    async def is_limit_reached(self) -> bool:
+        async with self.tracking_lock:
+            return self.extracted_jobs_counter >= self.max_jobs
+
+    def total_queued(self) -> int:
+        return 0   # no named sub-queues; approximate via filter_queue externally
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config builder
+# ─────────────────────────────────────────────────────────────────────────────
+def load_scraper_config(
+    url_list:            list[str],
+    about_me:            str,
+    ignore_companies_raw: str,
+    ignore_related_raw:   str,
+    max_jobs:            int,
+    per_company_jobs:    int,
+    min_match_percentage: int,
+    concurrency:         int,
+    google_sheet_url:    str = "",
+    sheet_name:          str = "Indeed Jobs",
+    headless:            bool = True,
+    proxy_config:        dict = None,
+) -> ScraperConfig:
+    ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
+    ignore_related   = [kw.strip().lower() for kw in ignore_related_raw.splitlines() if kw.strip()]
+
+    return ScraperConfig(
+        about_me=about_me,
+        ignore_companies=ignore_companies,
+        ignore_related=ignore_related,
+        concurrency=concurrency,
+        url_queue=url_list,
+        max_jobs=max_jobs,
+        per_company_jobs=per_company_jobs,
+        min_match_percentage=min_match_percentage,
+        google_sheet_url=google_sheet_url,
+        sheet_name=sheet_name,
+        headless=headless,
+        proxy_config=proxy_config or {},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging helpers (Actor.log replaces Django log_dispatcher)
+# ─────────────────────────────────────────────────────────────────────────────
+async def log(level: str, message: str) -> None:
+    """Thin wrapper so workers can call await log('info', '…')."""
+    fn = getattr(Actor.log, level, Actor.log.info)
+    fn(message)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UID persistence via Apify KV store (replaces Django ORM)
+# ─────────────────────────────────────────────────────────────────────────────
+_KV_UID_KEY = "processed_uids"
+
+
+async def load_processed_uids() -> set:
+    """Load previously processed UIDs from Apify Key-Value store."""
+    try:
+        kv    = await Actor.open_key_value_store()
+        value = await kv.get_value(_KV_UID_KEY)
+        if isinstance(value, list):
+            Actor.log.info(f"📂 Loaded {len(value)} previously processed UIDs")
+            return set(value)
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not load processed UIDs: {e}")
+    return set()
+
+
+async def save_processed_uids(uids: list) -> None:
+    """Persist new UIDs to Apify Key-Value store (merge with existing)."""
+    if not uids:
+        return
+    try:
+        kv       = await Actor.open_key_value_store()
+        existing = await kv.get_value(_KV_UID_KEY) or []
+        merged   = list(set(existing) | set(uids))
+        await kv.set_value(_KV_UID_KEY, merged)
+        Actor.log.info(f"💾 Saved {len(uids)} new UIDs (total: {len(merged)})")
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not save UIDs: {e}")
+
+
+async def update_processed_uids(uids: list) -> None:
+    await save_processed_uids(uids)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data push (replaces Django model + data_dispatcher)
+# ─────────────────────────────────────────────────────────────────────────────
+async def push_job_data(data: dict, config: ScraperConfig) -> None:
+    """Push one scraped job to the Apify dataset and buffer it for GSheet."""
+    try:
+        await Actor.push_data(data)
+        config._saved_jobs.append(data)   # kept in memory for GSheet upload
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Failed to push data: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser context creation (Apify version — proxies via playwright_proxy arg)
+# ─────────────────────────────────────────────────────────────────────────────
+async def create_context(browser, playwright_proxy: dict | None = None):
+    """
+    Creates a new Playwright browser context.
+    playwright_proxy: {"server": "http://...", "username": ..., "password": ...}
+    """
+    context_options: dict = {"no_viewport": True}
+    if playwright_proxy:
+        context_options["proxy"] = playwright_proxy
+
+    return await browser.new_context(**context_options)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Human-behaviour simulation (unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
+async def simulate_human_behavior(page: Page) -> None:
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+    for _ in range(random.randint(1, 2)):
+        await page.mouse.wheel(0, random.randint(100, 200))
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+    await page.mouse.move(random.randint(0, 800), random.randint(0, 600), steps=random.randint(5, 10))
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await asyncio.sleep(random.uniform(0.5, 1.0))
+    await page.mouse.move(random.randint(0, 800), random.randint(0, 600), steps=random.randint(5, 10))
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page navigation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+async def open_jobs_search_page(page: Page, job_search_url: str, url_queue: asyncio.Queue) -> None:
+    for attempt in range(3):
+        try:
+            await page.goto(job_search_url, wait_until="load")
+            return
+        except PlaywrightTimeoutError:
+            if attempt < 2:
+                Actor.log.info(f"⚠️ Attempt {attempt + 1} failed, retrying…")
+            else:
+                Actor.log.warning(f"❌ All attempts failed for {job_search_url}, re-queued")
+                await url_queue.put(job_search_url)
+                await asyncio.sleep(random.uniform(4, 8))
+
+
+async def get_total_jobs(page: Page) -> int:
+    try:
+        content = await page.content()
+        match   = re.search(r'"totalJobCount":(\d+)', content)
+        return int(match.group(1)) if match else 0
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Error finding total jobs: {e}")
+        return 0
+
+
+async def build_and_enqueue_jobs_search_urls(
+    total_jobs: int, base_url: str, url_queue: asyncio.Queue
+) -> None:
+    for start in range(10, total_jobs, 10):
+        await url_queue.put(f"{base_url}&start={start}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue helper
+# ─────────────────────────────────────────────────────────────────────────────
+def clear_queue(q: asyncio.Queue) -> None:
+    while not q.empty():
+        try:
+            q.get_nowait()
+            q.task_done()
+        except asyncio.QueueEmpty:
+            break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job info extractors (unchanged from original)
+# ─────────────────────────────────────────────────────────────────────────────
+async def extract_salary_job_types(page: Page):
+    container = page.locator("#salaryInfoAndJobType")
+    salary    = ""
+    job_types = []
+
+    if await container.count() > 0:
+        spans             = container.locator("span")
+        count             = await spans.count()
+        delimiter_pattern = re.compile(r'\s*[,\/·]\s*|\s+-\s+')
+
+        for i in range(count):
+            text = (await spans.nth(i).inner_text()).strip()
+            if not text:
+                continue
+            if any(sym in text for sym in ("$", "£", "€")) or "year" in text.lower():
+                salary = text
+            else:
+                tokens = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
+                job_types.extend(tokens)
+
+        if count == 1 and not salary:
+            text      = await spans.first.inner_text()
+            job_types = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
+
+    return (salary, *(job_types + [""] * 4)[:4])
+
+
+async def extract_rating_and_reviews(page: Page) -> dict:
+    review_block = page.locator(".jobsearch-CompanyReview").first
+    if await review_block.count() == 0:
+        return {"rating": 0.0, "review_count": 0}
+
+    rating      = 0.0
+    rating_div  = review_block.locator('div[role="img"]').first
+    if await rating_div.count() > 0:
+        aria_label = await rating_div.get_attribute("aria-label")
+        if aria_label:
+            m = re.search(r'(\d+\.?\d*)', aria_label)
+            if m:
+                rating = float(m.group(1))
+
+    review_count = 0
+    count_span   = review_block.locator("span.css-1t3rggk").first
+    if await count_span.count() > 0:
+        m = re.search(r'(\d+)', (await count_span.inner_text()).strip())
+        if m:
+            review_count = int(m.group(1))
+
+    return {"rating": rating, "review_count": review_count}
+
+
+async def extract_external_apply_link(page: Page) -> str:
+    btn = page.locator('button[aria-label*="Apply on company site"]').first
+    if await btn.count() > 0:
+        href = await btn.get_attribute("href")
+        return href or ""
+    return ""
+
+
+def is_ignored(company_name: str, ignore_companies: list[str]) -> tuple[bool, str]:
+    for ic in ignore_companies:
+        if re.search(r'\b' + re.escape(ic) + r'\b', company_name, re.IGNORECASE):
+            return True, ic
+    return False, ""
+
+
+def check_remote_status(description: str, location: str = "", remote_badge: str = "") -> str:
+    badge = remote_badge.strip().lower()
+    if badge == "remote":
+        return "Remote"
+    if "hybrid" in badge:
+        return "Hybrid"
+    if badge in ("in-person", "on-site", "on site"):
+        return "In-Person"
+
+    text = (description + " " + location).lower()
+
+    non_remote_patterns = [
+        r'not a remote position', r'not a remote role', r'this is not a remote',
+        r'must work in the office', r'work location:\s*in[- ]person',
+        r'work remotely[:\s]*no', r'no remote work', r'not eligible for remote',
+        r'fully on[- ]site', r'this is a fully on[- ]site',
+        r'works full[- ]time on[- ]site', r'on[- ]site only',
+        r'office[- ]based', r'in[- ]office required', r'must be.*on[- ]site',
+        r'required to (work|report) (in|to) (the )?office',
+    ]
+    hybrid_patterns = [
+        r'\bhybrid\b', r'hybrid remote', r'hybrid work', r'hybrid schedule',
+        r'part[- ]time remote',
+        r'\d+\s*days?\s*(per week\s*)?(in|from)\s*(the\s*)?office',
+        r'\d+\s*days?\s*(a|per)\s*week.*on[- ]?site',
+        r'remote.*after.*training', r'may be available.*remote',
+        r'blending.*office day', r'#li-hybrid', r'2[- ]3 days onsite',
+        r'split.*between.*office.*home', r'flexible.*in[- ]office',
+    ]
+    remote_patterns = [
+        r'\bfully remote\b', r'\b100% remote\b', r'work from home',
+        r'work location:\s*remote', r'\bremote position\b', r'\bremote role\b',
+        r'\bremote-first\b', r'work remotely[:\s]*yes', r'this is a remote',
+        r'#li-remote', r'remote.*anywhere', r'work from anywhere',
+        r'permanently remote', r'telework',
+    ]
+
+    if any(re.search(p, text) for p in non_remote_patterns):
+        return "In-Person"
+    if any(re.search(p, text) for p in hybrid_patterns):
+        return "Hybrid"
+    if any(re.search(p, text) for p in remote_patterns):
+        return "Remote"
+    return " "
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared batch flush
+# ─────────────────────────────────────────────────────────────────────────────
+async def flush_batch(
+    config: ScraperConfig,
+    batch_positions: list[str],
+    batch_links: list[str],
+    batch_uids: list[str],
+    filter_queue: asyncio.Queue,
+) -> None:
+    percentages = await get_match_percentages(config.about_me, batch_positions)
+
+    passed_links: list[str]   = []
+    passed_pcts:  list[float] = []
+    for link, pct in zip(batch_links, percentages):
+        if pct >= config.min_match_percentage:
+            passed_links.append(link)
+            passed_pcts.append(pct)
+
+    if passed_links:
+        accepted_links, accepted_pcts = await config.confirm_filtered_jobs(
+            passed_links, passed_pcts
+        )
+        for link, pct in zip(accepted_links, accepted_pcts):
+            await filter_queue.put((link, pct))
+        if accepted_links:
+            Actor.log.info(
+                f"✅ Scorer accepted {len(accepted_links)}/{len(passed_links)} jobs"
+                f"  |  total: {config.extracted_jobs_counter}/{config.max_jobs}"
+            )
+
+    await config.buffer_uids(batch_uids)
+    if len(config._uid_buffer) >= ScraperSettings.UID_FLUSH_SIZE:
+        uids_to_save = await config.flush_uid_buffer()
+        await update_processed_uids(uids_to_save)
+
+
+async def _flush_shared_batch(
+    config: ScraperConfig,
+    batch_positions: list,
+    batch_links: list,
+    batch_uids: list,
+    batch_lock: asyncio.Lock,
+    filter_queue: asyncio.Queue,
+) -> None:
+    async with batch_lock:
+        if not batch_positions:
+            return
+        snap_positions = batch_positions.copy()
+        snap_links     = batch_links.copy()
+        snap_uids      = batch_uids.copy()
+        batch_positions.clear()
+        batch_links.clear()
+        batch_uids.clear()
+    await flush_batch(config, snap_positions, snap_links, snap_uids, filter_queue)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Status logger
+# ─────────────────────────────────────────────────────────────────────────────
+async def status_logger(config: ScraperConfig, stop_event: asyncio.Event) -> None:
+    BAR_LEN, last_saved, ticks_since_log = 20, -1, 0
+    HEARTBEAT_TICKS = 30
+
+    while not stop_event.is_set():
+        saved = config.extracted_jobs_counter
+        ticks_since_log += 1
+
+        if saved != last_saved or ticks_since_log >= HEARTBEAT_TICKS:
+            pct    = saved / config.max_jobs if config.max_jobs else 0
+            filled = int(pct * BAR_LEN)
+            bar    = "█" * filled + "░" * (BAR_LEN - filled)
+            Actor.log.info(
+                f"📊 [{bar}] {pct * 100:.1f}%  |  ✅ saved: {saved}/{config.max_jobs}"
+            )
+            last_saved, ticks_since_log = saved, 0
+
+        await asyncio.sleep(2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Startup info
+# ─────────────────────────────────────────────────────────────────────────────
+async def showstartinginfo(config: ScraperConfig) -> None:
+    Actor.log.info("=" * 80)
+    Actor.log.info(f"🎯 Max jobs:        {config.max_jobs}")
+    Actor.log.info(f"🔗 Job URLs:        {len(config.url_queue)}")
+    Actor.log.info(f"⚡ Concurrency:     {config.concurrency}")
+    Actor.log.info(f"🏢 Per company:     {config.per_company_jobs}")
+    Actor.log.info(f"📌 Min match:       {config.min_match_percentage}%")
+    Actor.log.info(f"🚫 Ignore companies:{len(config.ignore_companies)} | {config.ignore_companies[:5]}")
+    Actor.log.info(f"🚫 Ignore related:  {config.ignore_related}")
+    Actor.log.info(f"📚 Prev processed:  {len(config.processed_uids)}")
+    Actor.log.info(f"👻 Headless:        {config.headless}")
+    Actor.log.info("=" * 80)
+    Actor.log.info("🏃 Starting scraper execution…")

@@ -1,26 +1,101 @@
 {
-    "$schema": "https://apify.com/schemas/v1/input.ide.json",
-    "title": "Python Playwright Scraper",
-    "type": "object",
-    "schemaVersion": 1,
-    "properties": {
-        "start_urls": {
-            "title": "Start URLs",
-            "type": "array",
-            "description": "URLs to start with",
-            "prefill": [
-                {
-                    "url": "https://apify.com"
-                }
-            ],
-            "editor": "requestListSources"
-        },
-        "max_depth": {
-            "title": "Maximum depth",
-            "type": "integer",
-            "description": "Depth to which to scrape to",
-            "default": 1
-        }
+  "title": "Indeed Job Scraper Input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "start_urls": {
+      "title": "Indeed search URLs",
+      "type": "array",
+      "description": "List of Indeed job search URLs to scrape (e.g. https://www.indeed.com/jobs?q=python+developer&l=Remote).",
+      "editor": "stringList",
+      "prefill": [
+        "https://www.indeed.com/jobs?q=software+engineer&l=Remote"
+      ]
     },
-    "required": ["start_urls"]
+    "about_me": {
+      "title": "About Me / Job Titles",
+      "type": "string",
+      "description": "Your profile or target job titles, one per line. Used by JobBERT-v2 to score each listing.",
+      "editor": "textarea",
+      "prefill": "Software Engineer\nBackend Developer\nPython Developer"
+    },
+    "max_jobs": {
+      "title": "Max Jobs to Collect",
+      "type": "integer",
+      "description": "Stop after this many jobs pass the match threshold.",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 500
+    },
+    "per_company_jobs": {
+      "title": "Max Jobs Per Company",
+      "type": "integer",
+      "description": "Cap on how many jobs from the same company to include.",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 50
+    },
+    "min_match_percentage": {
+      "title": "Minimum Match % (AI filter)",
+      "type": "integer",
+      "description": "Jobs scoring below this threshold are skipped.",
+      "default": 30,
+      "minimum": 0,
+      "maximum": 100
+    },
+    "concurrency": {
+      "title": "Concurrency (browser workers)",
+      "type": "integer",
+      "description": "Number of parallel listing + processing workers. Each spawns its own browser context.",
+      "default": 3,
+      "minimum": 1,
+      "maximum": 10
+    },
+    "ignore_companies": {
+      "title": "Ignore Companies",
+      "type": "string",
+      "description": "One company name per line. Jobs from these companies are skipped.",
+      "editor": "textarea",
+      "prefill": ""
+    },
+    "ignore_related": {
+      "title": "Ignore Keywords",
+      "type": "string",
+      "description": "One keyword per line. Jobs whose description contains any of these are skipped.",
+      "editor": "textarea",
+      "prefill": ""
+    },
+    "google_sheet_url": {
+      "title": "Google Sheet URL (optional)",
+      "type": "string",
+      "description": "Full URL of the Google Sheet to export results to. Leave blank to skip.",
+      "editor": "textfield"
+    },
+    "sheet_name": {
+      "title": "Google Sheet Tab Name",
+      "type": "string",
+      "description": "Worksheet tab name to write results into.",
+      "default": "Indeed Jobs",
+      "editor": "textfield"
+    },
+    "google_sheets_credentials": {
+      "title": "Google Sheets Service Account (JSON)",
+      "type": "object",
+      "description": "Paste your Google service-account JSON here as an object. Required only if google_sheet_url is provided.",
+      "editor": "json"
+    },
+    "proxy_config": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Apify proxy configuration. Example: {\"useApifyProxy\": true, \"apifyProxyGroups\": [\"RESIDENTIAL\"]}",
+      "editor": "proxy"
+    },
+    "headless": {
+      "title": "Headless Browser",
+      "type": "boolean",
+      "description": "Run the browser in headless mode. Disable only for local debugging.",
+      "default": true
+    }
+  },
+  "required": ["start_urls", "about_me"]
 }
