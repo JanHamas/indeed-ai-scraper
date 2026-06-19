@@ -1,101 +1,86 @@
 {
-  "title": "Indeed Job Scraper Input",
+  "title": "Indeed AI Job Scraper",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
+
     "start_urls": {
-      "title": "Indeed search URLs",
+      "title": "🔗 Indeed Search URLs",
       "type": "array",
-      "description": "List of Indeed job search URLs to scrape (e.g. https://www.indeed.com/jobs?q=python+developer&l=Remote).",
+      "description": "Paste one or more Indeed job search URLs. To get these: go to Indeed → search for a job → copy the URL from your browser. You can add multiple URLs (different roles, locations, etc.).",
       "editor": "stringList",
       "prefill": [
-        "https://www.indeed.com/jobs?q=software+engineer&l=Remote"
+        "https://www.indeed.com/jobs?q=python+developer&l=Remote",
+        "https://www.indeed.com/jobs?q=software+engineer&l=New+York"
       ]
     },
+
     "about_me": {
-      "title": "About Me / Job Titles",
+      "title": "🎯 Your Target Job Titles",
       "type": "string",
-      "description": "Your profile or target job titles, one per line. Used by JobBERT-v2 to score each listing.",
+      "description": "Enter the job titles you are looking for, one per line. The AI uses these to score how well each job matches you — only jobs above your minimum score will be saved. Be specific for better results.",
       "editor": "textarea",
-      "prefill": "Software Engineer\nBackend Developer\nPython Developer"
+      "prefill": "Software Engineer\nBackend Developer\nPython Developer\nDjango Developer"
     },
+
     "max_jobs": {
-      "title": "Max Jobs to Collect",
+      "title": "📦 How Many Jobs to Collect?",
       "type": "integer",
-      "description": "Stop after this many jobs pass the match threshold.",
+      "description": "The scraper stops once it has collected this many matching jobs. Set higher if you want more results. Recommended: 50–200.",
       "default": 50,
       "minimum": 1,
       "maximum": 500
     },
+
     "per_company_jobs": {
-      "title": "Max Jobs Per Company",
+      "title": "🏢 Max Jobs Per Company",
       "type": "integer",
-      "description": "Cap on how many jobs from the same company to include.",
+      "description": "Limits how many jobs from the same company are included. For example, setting this to 3 means you won't get more than 3 jobs from Google, Amazon, etc. Helps keep results diverse.",
       "default": 5,
       "minimum": 1,
       "maximum": 50
     },
+
     "min_match_percentage": {
-      "title": "Minimum Match % (AI filter)",
+      "title": "🤖 Minimum AI Match Score (0–100)",
       "type": "integer",
-      "description": "Jobs scoring below this threshold are skipped.",
+      "description": "The AI scores each job title against your target titles. Only jobs that score at or above this number are saved. Lower = more results but less relevant. Higher = fewer but more targeted. Recommended: 30–50.",
       "default": 30,
       "minimum": 0,
       "maximum": 100
     },
-    "concurrency": {
-      "title": "Concurrency (browser workers)",
-      "type": "integer",
-      "description": "Number of parallel listing + processing workers. Each spawns its own browser context.",
-      "default": 3,
-      "minimum": 1,
-      "maximum": 10
-    },
+
     "ignore_companies": {
-      "title": "Ignore Companies",
+      "title": "🚫 Companies to Skip (optional)",
       "type": "string",
-      "description": "One company name per line. Jobs from these companies are skipped.",
+      "description": "Any jobs from these companies will be ignored. Enter one company name per line. Useful for filtering out staffing agencies or companies you've already applied to.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
       "editor": "textarea",
       "prefill": ""
     },
+
     "ignore_related": {
-      "title": "Ignore Keywords",
+      "title": "🚫 Keywords to Skip (optional)",
       "type": "string",
-      "description": "One keyword per line. Jobs whose description contains any of these are skipped.",
+      "description": "If a job description contains any of these words or phrases, that job will be skipped. Enter one keyword per line. Useful for filtering out roles that don't fit (e.g. security clearance requirements, specific tech stacks you want to avoid).\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "textarea",
       "prefill": ""
     },
+
     "google_sheet_url": {
-      "title": "Google Sheet URL (optional)",
+      "title": "📊 Google Sheet URL (optional)",
       "type": "string",
-      "description": "Full URL of the Google Sheet to export results to. Leave blank to skip.",
+      "description": "If you want results exported to Google Sheets, paste the full URL of your sheet here. Make sure the sheet is shared with your service account email. Leave blank to skip — results are always saved in the Apify dataset regardless.",
       "editor": "textfield"
     },
+
     "sheet_name": {
-      "title": "Google Sheet Tab Name",
+      "title": "📋 Google Sheet Tab Name",
       "type": "string",
-      "description": "Worksheet tab name to write results into.",
+      "description": "The name of the tab (worksheet) inside your Google Sheet where results will be written. If the tab doesn't exist, it will be created automatically.",
       "default": "Indeed Jobs",
       "editor": "textfield"
-    },
-    "google_sheets_credentials": {
-      "title": "Google Sheets Service Account (JSON)",
-      "type": "object",
-      "description": "Paste your Google service-account JSON here as an object. Required only if google_sheet_url is provided.",
-      "editor": "json"
-    },
-    "proxy_config": {
-      "title": "Proxy Configuration",
-      "type": "object",
-      "description": "Apify proxy configuration. Example: {\"useApifyProxy\": true, \"apifyProxyGroups\": [\"RESIDENTIAL\"]}",
-      "editor": "proxy"
-    },
-    "headless": {
-      "title": "Headless Browser",
-      "type": "boolean",
-      "description": "Run the browser in headless mode. Disable only for local debugging.",
-      "default": true
     }
+
   },
   "required": ["start_urls", "about_me"]
 }
