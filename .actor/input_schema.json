@@ -4,56 +4,115 @@
   "schemaVersion": 1,
   "properties": {
 
+    "search_keywords": {
+      "title": "🔑 Positions / Keywords for Search",
+      "type": "string",
+      "description": "Enter job titles or keywords to search on Indeed, one per line. The scraper builds search URLs automatically from these.\n\nExample:\nPython Developer\nBackend Engineer\nDjango Developer\n\nLeave blank if you are providing your own 'Indeed Search URLs' below.",
+      "editor": "textarea",
+      "prefill": ""
+    },
+
+    "max_results_per_search": {
+      "title": "📄 Max Job Listings per Search",
+      "type": "integer",
+      "description": "Maximum number of job listings to scrape per keyword search. For example, if you have 3 keywords and set this to 50, the scraper will fetch up to 50 listings per keyword (150 total before filtering).\n\nSet to 0 for no limit — all available listings will be scraped.",
+      "default": 50,
+      "minimum": 0,
+      "maximum": 1000
+    },
+
+    "search_country": {
+      "title": "🌍 Country for Search",
+      "type": "string",
+      "description": "The country to search on Indeed. Determines which Indeed domain is used (e.g. indeed.com, uk.indeed.com).",
+      "editor": "select",
+      "enum": ["us", "uk", "ca", "au", "in", "de", "fr", "sg", "pk", "nl", "es", "it", "br", "mx", "nz", "jp", "ae", "sa"],
+      "enumTitles": [
+        "🇺🇸 United States", "🇬🇧 United Kingdom", "🇨🇦 Canada", "🇦🇺 Australia",
+        "🇮🇳 India", "🇩🇪 Germany", "🇫🇷 France", "🇸🇬 Singapore",
+        "🇵🇰 Pakistan", "🇳🇱 Netherlands", "🇪🇸 Spain", "🇮🇹 Italy",
+        "🇧🇷 Brazil", "🇲🇽 Mexico", "🇳🇿 New Zealand", "🇯🇵 Japan",
+        "🇦🇪 UAE", "🇸🇦 Saudi Arabia"
+      ],
+      "default": "us"
+    },
+
+    "search_location": {
+      "title": "📍 Location for Search (optional)",
+      "type": "string",
+      "description": "City, state, or region to search within. Leave blank to search nationwide or for remote jobs.\n\nExamples:  San Francisco, CA  |  New York  |  Remote  |  London",
+      "editor": "textfield",
+      "prefill": ""
+    },
+
     "start_urls": {
-      "title": "🔗 Indeed Search URLs",
+      "title": "🔗 Indeed Search URLs (optional — overrides keyword search)",
       "type": "array",
-      "description": "Paste one or more Indeed job search URLs. To get these: go to Indeed → search for a job → copy the URL from your browser. You can add multiple URLs (different roles, locations, etc.).",
+      "description": "Advanced option: paste your own Indeed search URLs here. These take priority over the keyword/location/country fields above.\n\nWhen to use this: if you want to use Indeed's filters (date posted, salary, job type) that aren't available through the keyword builder — just set up your search on Indeed with those filters and copy the URL.\n\nLeave blank to use the keyword search fields above.",
       "editor": "stringList",
-      "prefill": [
-        "https://www.indeed.com/jobs?q=python+developer&l=Remote",
-        "https://www.indeed.com/jobs?q=software+engineer&l=New+York"
-      ]
+      "prefill": []
     },
 
     "about_me": {
-      "title": "🎯 Your Target Job Titles",
+      "title": "🎯 Target Job Titles for AI Matching (optional)",
       "type": "string",
-      "description": "Enter the job titles you are looking for, one per line. The AI uses these to score how well each job matches you — only jobs above your minimum score will be saved. Be specific for better results.",
+      "description": "Enter the job titles you are targeting, one per line. The AI (JobBERT) scores each scraped job title against yours — only jobs meeting your minimum score are saved.\n\nLeave blank to disable AI filtering and collect all jobs.",
       "editor": "textarea",
-      "prefill": "Software Engineer\nBackend Developer\nPython Developer\nDjango Developer"
+      "prefill": ""
+    },
+
+    "min_match_percentage": {
+      "title": "🤖 Minimum AI Match Score (0–100)",
+      "type": "integer",
+      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
+      "default": 40,
+      "minimum": 0,
+      "maximum": 100
     },
 
     "max_jobs": {
-      "title": "📦 How Many Jobs to Collect?",
+      "title": "📦 Total Jobs to Collect",
       "type": "integer",
-      "description": "The scraper stops once it has collected this many matching jobs. Set higher if you want more results. Recommended: 50–200.",
+      "description": "The scraper stops once it has saved this many jobs total (across all keywords/URLs). Recommended: 50–500.",
       "default": 50,
       "minimum": 1,
       "maximum": 500
     },
 
     "per_company_jobs": {
-      "title": "🏢 Max Jobs Per Company",
+      "title": "🏢 Max Jobs per Company",
       "type": "integer",
-      "description": "Limits how many jobs from the same company are included. For example, setting this to 3 means you won't get more than 3 jobs from Google, Amazon, etc. Helps keep results diverse.",
+      "description": "Limits how many jobs from the same company are saved. Keeps results diverse.",
       "default": 5,
       "minimum": 1,
       "maximum": 50
     },
 
-    "min_match_percentage": {
-      "title": "🤖 Minimum AI Match Score (0–100)",
-      "type": "integer",
-      "description": "The AI scores each job title against your target titles. Only jobs that score at or above this number are saved. Lower = more results but less relevant. Higher = fewer but more targeted. Recommended: 30–50.",
-      "default": 30,
-      "minimum": 0,
-      "maximum": 100
+    "scrape_company_details": {
+      "title": "🏭 Scrape Company Details",
+      "type": "boolean",
+      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so it will be slower and use more proxy bandwidth.",
+      "default": false
+    },
+
+    "save_unique_only": {
+      "title": "✅ Save Only Unique Job Listings",
+      "type": "boolean",
+      "description": "When enabled, if the same job title at the same company appears more than once (e.g. across different search URLs), only the first occurrence is saved. Recommended to keep on.",
+      "default": true
+    },
+
+    "follow_apply_redirect": {
+      "title": "🔗 Follow Redirects for Apply Link",
+      "type": "boolean",
+      "description": "When enabled, the scraper resolves the external 'Apply on company site' link to its final destination URL (following all redirects). Useful when you want the real company careers page URL instead of Indeed's redirect.\n\nSlightly slower — only enable if you need resolved URLs.",
+      "default": false
     },
 
     "ignore_companies": {
       "title": "🚫 Companies to Skip (optional)",
       "type": "string",
-      "description": "Any jobs from these companies will be ignored. Enter one company name per line. Useful for filtering out staffing agencies or companies you've already applied to.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
+      "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
       "editor": "textarea",
       "prefill": ""
     },
@@ -61,26 +120,90 @@
     "ignore_related": {
       "title": "🚫 Keywords to Skip (optional)",
       "type": "string",
-      "description": "If a job description contains any of these words or phrases, that job will be skipped. Enter one keyword per line. Useful for filtering out roles that don't fit (e.g. security clearance requirements, specific tech stacks you want to avoid).\n\nExample:\nclearance required\nC++\nmanagement consulting",
+      "description": "If a job description contains any of these words, that job is skipped. One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "textarea",
       "prefill": ""
+    },
+
+    "processed_job_urls": {
+      "title": "⏭️ Already-Processed Job URLs (skip duplicates across runs)",
+      "type": "array",
+      "description": "Paste Indeed job URLs you already scraped in a previous run. The scraper extracts job IDs from these and skips them — so you never collect the same job twice across multiple runs.\n\nPaste job URLs in the format:\nhttps://www.indeed.com/viewjob?jk=abc123def456",
+      "editor": "stringList",
+      "prefill": []
+    },
+
+    "account_cookies": {
+      "title": "🍪 Indeed Account Cookies (optional — recommended)",
+      "type": "array",
+      "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install 'Cookie-Editor' or 'EditThisCookie' extension.\n3. Export cookies as JSON and paste here.",
+      "editor": "json",
+      "prefill": []
+    },
+
+    "indeed_email": {
+      "title": "📧 Indeed Email (alternative to cookies)",
+      "type": "string",
+      "description": "Used only when 'Account Cookies' is empty. The scraper will log in automatically. Note: Indeed may trigger CAPTCHA — providing cookies directly is more reliable.",
+      "editor": "textfield",
+      "prefill": ""
+    },
+
+    "indeed_password": {
+      "title": "🔑 Indeed Password (alternative to cookies)",
+      "type": "string",
+      "description": "Used only when 'Account Cookies' is empty and 'Indeed Email' is filled.",
+      "editor": "textfield",
+      "isSecret": true,
+      "prefill": ""
+    },
+
+    "proxy_list": {
+      "title": "🌐 Proxy List (optional)",
+      "type": "string",
+      "description": "Your own proxies, one per line. Rotated each time a browser context is recreated (every 1000 requests).\n\nSupported formats:\n  http://user:pass@host:port\n  host:port:user:pass\n  host:port",
+      "editor": "textarea",
+      "prefill": ""
+    },
+
+    "proxy_config": {
+      "title": "🛡️ Apify Proxy (fallback if no proxy list)",
+      "type": "object",
+      "description": "Apify's built-in proxy. Only used when 'Proxy List' is empty.",
+      "editor": "proxy"
     },
 
     "google_sheet_url": {
       "title": "📊 Google Sheet URL (optional)",
       "type": "string",
-      "description": "If you want results exported to Google Sheets, paste the full URL of your sheet here. Make sure the sheet is shared with your service account email. Leave blank to skip — results are always saved in the Apify dataset regardless.",
+      "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Share → General access → 'Anyone with the link' → Editor.\n3. Paste the URL here.",
       "editor": "textfield"
     },
 
     "sheet_name": {
       "title": "📋 Google Sheet Tab Name",
       "type": "string",
-      "description": "The name of the tab (worksheet) inside your Google Sheet where results will be written. If the tab doesn't exist, it will be created automatically.",
+      "description": "The worksheet tab where results are written. Created automatically if it doesn't exist.",
       "default": "Indeed Jobs",
       "editor": "textfield"
+    },
+
+    "concurrency": {
+      "title": "⚡ Concurrency (advanced)",
+      "type": "integer",
+      "description": "Number of parallel browser workers per phase. Higher = faster but more memory and proxy usage. Max: 10.",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 10
+    },
+
+    "headless": {
+      "title": "👻 Headless Browser",
+      "type": "boolean",
+      "description": "Run the browser without a visible window. Disable only for local debugging.",
+      "default": true
     }
 
   },
-  "required": ["start_urls", "about_me"]
+  "required": []
 }

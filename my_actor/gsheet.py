@@ -1,7 +1,8 @@
 """
 src/gsheet.py
-Google Sheets upload — credentials come from actor input dict,
-not a local file path (Apify actors have no persistent filesystem).
+Google Sheets upload — PUBLIC URL mode.
+The sheet must be shared as "Anyone with the link can edit".
+No service account credentials required from the user.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from typing import Any
 
 import gspread
 import pytz
-from google.oauth2 import service_account
+from google.auth.credentials import AnonymousCredentials
 
 
 def _extract_workbook_id(link: str) -> str | None:
@@ -24,36 +25,52 @@ def _extract_workbook_id(link: str) -> str | None:
 
 async def upload_to_google_sheet(
     link: str,
-    credentials_dict: dict,       # full service-account JSON as a dict (from actor input)
-    scopes: list[str],
     sheet_name: str,
-    jobs: list[dict],             # list of job dicts already in memory
+    jobs: list[dict],
     log: Any,
 ) -> None:
     """
-    Upload scraped jobs to Google Sheets.
+    Upload scraped jobs to a publicly-editable Google Sheet.
 
-    credentials_dict — the service account JSON parsed into a Python dict.
-    Pass it directly in actor input as `google_sheets_credentials`.
-    jobs             — all scraped jobs buffered in config._saved_jobs.
+    Requirements for the user:
+      1. Open the Google Sheet.
+      2. Click Share → Change to "Anyone with the link" → set role to "Editor".
+      3. Copy the sheet URL and paste it into the actor input.
+
+    No credentials dict, no service account email sharing needed.
     """
-    # ── Auth ──────────────────────────────────────────────────────────────────
+    wb_id = _extract_workbook_id(link)
+    if not wb_id:
+        log.error(f"❌ Invalid Google Sheet URL — cannot extract workbook ID: {link}")
+        return
+
+    # ── Connect anonymously (works only for sheets shared as "anyone can edit") ──
     try:
-        creds    = service_account.Credentials.from_service_account_info(
-            credentials_dict, scopes=scopes
-        )
-        client   = gspread.authorize(creds)
-        wb_id    = _extract_workbook_id(link)
-        if not wb_id:
-            log.error(f"❌ Invalid Google Sheet URL — cannot extract workbook ID: {link}")
-            return
+        # gspread supports anonymous access for publicly editable sheets
+        client = gspread.Client(auth=None)
+        client.session = gspread.auth.local_server_flow   # not used, replaced below
+
+        # Use requests-based anonymous client
+        import requests
+        from gspread import Client
+        from gspread.utils import ExceptionType
+
+        session = requests.Session()
+
+        # Build a minimal gspread client that uses no OAuth
+        client = Client(auth=AnonymousCredentials(), session=session)
         workbook = client.open_by_key(wb_id)
+
     except Exception as e:
-        log.error(f"❌ Google Sheet auth error: {e}")
+        log.error(
+            f"❌ Could not open Google Sheet. "
+            f"Make sure the sheet is shared as 'Anyone with the link can edit'. "
+            f"Error: {e}"
+        )
         return
 
     # ── Split by apply type ───────────────────────────────────────────────────
-    export_fields = [
+    extraction_fields = [
         "position", "company", "url", "salary", "jt0", "is_remote",
         "location", "apply_type", "benefits", "description", "rating",
         "review_count", "job_match", "job_id", "external_apply_link",
@@ -81,7 +98,7 @@ async def upload_to_google_sheet(
         rows = []
         for job in job_list:
             row = []
-            for f in export_fields:
+            for f in extraction_fields:
                 val = job.get(f, "")
                 if hasattr(val, "strftime"):
                     val = val.strftime("%m/%d/%Y %I:%M %p")
@@ -110,7 +127,11 @@ async def upload_to_google_sheet(
             f"✅ Wrote {len(easy_jobs)} Easy Apply + {len(cs_jobs)} CS Apply jobs | {link}"
         )
     except Exception as e:
-        log.error(f"❌ Error writing to Google Sheet: {e}")
+        log.error(
+            f"❌ Error writing to Google Sheet. "
+            f"Ensure the sheet is shared as 'Anyone with the link can edit'. "
+            f"Error: {e}"
+        )
         return
 
     # ── Formatting ────────────────────────────────────────────────────────────

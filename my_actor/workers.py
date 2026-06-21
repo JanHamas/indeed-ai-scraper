@@ -1,11 +1,10 @@
 """
 src/workers.py
-listing_worker and processing_worker — ported to Apify (no Django).
+listing_worker and processing_worker — Apify version.
 """
 from __future__ import annotations
 
 import asyncio
-import random
 from urllib.parse import urljoin, urlparse, parse_qs
 
 from apify import Actor
@@ -14,7 +13,7 @@ from playwright.async_api import Browser
 from .config import ScraperSettings
 from .helpers import (
     ScraperConfig,
-    create_context,
+    create_context_with_cookies,
     open_jobs_search_page,
     simulate_human_behavior,
     get_total_jobs,
@@ -28,17 +27,15 @@ from .job_scraper import process_filter_jobs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Context rotation helper (shared by both workers)
+# Context rotation — picks next proxy automatically via rotator
 # ─────────────────────────────────────────────────────────────────────────────
 async def _maybe_rotate_context(
     current_context,
     current_page,
     config: ScraperConfig,
-    playwright_proxy: dict | None,
     worker_id: int,
     phase: str,
     browser: Browser,
-    account_cookies: list | None = None,
 ):
     context_id = id(current_context)
     async with config.context_lock:
@@ -49,20 +46,18 @@ async def _maybe_rotate_context(
         return current_context, current_page
 
     Actor.log.info(
-        f"🔄 Worker {worker_id} [{phase}] hit {count} requests — rotating context"
+        f"🔄 Worker {worker_id} [{phase}] hit {count} requests — rotating context + proxy"
     )
     await current_context.close()
     async with config.context_lock:
         config._context_requests.pop(context_id, None)
 
-    new_ctx = await create_context(browser, playwright_proxy)
-    if account_cookies:
-        await new_ctx.add_cookies(account_cookies)
+    new_ctx = await create_context_with_cookies(browser, config)
     async with config.context_lock:
         config._context_requests[id(new_ctx)] = 0
 
     new_page = await new_ctx.new_page()
-    Actor.log.info(f"✅ Worker {worker_id} [{phase}] — fresh context + page ready")
+    Actor.log.info(f"✅ Worker {worker_id} [{phase}] — fresh context ready")
     return new_ctx, new_page
 
 
@@ -78,16 +73,13 @@ async def listing_worker(
     batch_links: list,
     batch_uids: list,
     batch_lock: asyncio.Lock,
-    playwright_proxy: dict | None,
     worker_id: int = 0,
 ) -> None:
-    context = await create_context(browser, playwright_proxy)
+    context = await create_context_with_cookies(browser, config)
     async with config.context_lock:
         config._context_requests[id(context)] = 0
-
     page = await context.new_page()
 
-    # ── Phase 1: Listing ──────────────────────────────────────────────────────
     try:
         IDLE_TIMEOUT, POLL_INTERVAL = 60, 0.5
         idle_elapsed = 0
@@ -112,23 +104,28 @@ async def listing_worker(
 
             try:
                 context, page = await _maybe_rotate_context(
-                    context, page, config, playwright_proxy, worker_id, "listing", browser
+                    context, page, config, worker_id, "listing", browser
                 )
 
                 await open_jobs_search_page(page, job_search_url, url_queue)
                 await simulate_human_behavior(page)
 
-                # Enqueue pagination URLs on first page
+                # Enqueue pagination URLs on first page only
                 try:
                     parsed = urlparse(page.url)
                     params = parse_qs(parsed.query)
                     if "start" not in params:
                         total_jobs = await get_total_jobs(page)
                         await build_and_enqueue_jobs_search_urls(
-                            total_jobs, job_search_url, url_queue
+                            total_jobs=total_jobs,
+                            base_url=job_search_url,
+                            url_queue=url_queue,
+                            max_results_per_search=config.max_results_per_search,
                         )
                         Actor.log.info(
-                            f"🌐 Opened: {total_jobs}+ jobs found in {job_search_url}"
+                            f"🌐 {total_jobs}+ jobs found"
+                            + (f" (capped at {config.max_results_per_search})" if config.max_results_per_search else "")
+                            + f" — {job_search_url}"
                         )
                 except Exception as e:
                     Actor.log.warning(f"⚠️ Pagination error: {e}")
@@ -185,8 +182,7 @@ async def listing_worker(
                 if pushed:
                     Actor.log.info(f"📋 Worker {worker_id} pushed {pushed} jobs to batch")
 
-                # Append to shared batch; flush if large enough
-                should_flush = False
+                should_flush   = False
                 snap_positions = snap_links = snap_uids = []
 
                 async with batch_lock:
@@ -214,7 +210,7 @@ async def listing_worker(
     except Exception as e:
         Actor.log.error(f"❌ Worker {worker_id} listing phase failed: {e}")
 
-    # ── Phase 2: Drain filter_queue ───────────────────────────────────────────
+    # ── Phase 2: drain filter_queue ───────────────────────────────────────────
     try:
         while True:
             if filter_queue.empty() and url_queue.empty():
@@ -231,15 +227,10 @@ async def listing_worker(
 
             link, pct = item
             context, page = await _maybe_rotate_context(
-                context, page, config, playwright_proxy, worker_id, "processing", browser
+                context, page, config, worker_id, "processing", browser
             )
             try:
-                await process_filter_jobs(
-                    page=page,
-                    link=link,
-                    percentage=pct,
-                    config=config,
-                )
+                await process_filter_jobs(page=page, link=link, percentage=pct, config=config)
             except Exception as e:
                 Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
             finally:
@@ -247,7 +238,6 @@ async def listing_worker(
 
     except Exception as e:
         Actor.log.error(f"❌ Worker {worker_id} processing phase failed: {e}")
-
     finally:
         async with config.context_lock:
             config._context_requests.pop(id(context), None)
@@ -256,20 +246,18 @@ async def listing_worker(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# processing_worker  (dedicated — only processes filter_queue)
+# processing_worker
 # ─────────────────────────────────────────────────────────────────────────────
 async def processing_worker(
     browser: Browser,
     config: ScraperConfig,
     url_queue: asyncio.Queue,
     filter_queue: asyncio.Queue,
-    playwright_proxy: dict | None,
     worker_id: int = 0,
 ) -> None:
-    context = await create_context(browser, playwright_proxy)
+    context = await create_context_with_cookies(browser, config)
     async with config.context_lock:
         config._context_requests[id(context)] = 0
-
     page = await context.new_page()
 
     try:
@@ -287,29 +275,11 @@ async def processing_worker(
                 break
 
             link, pct = item
-
-            context_id = id(context)
-            async with config.context_lock:
-                count = config._context_requests.get(context_id, 0) + 1
-                config._context_requests[context_id] = count
-
-            if count >= ScraperSettings.context_rotate_limit:
-                Actor.log.info(f"🔄 Processing worker {worker_id} rotating context at {count}")
-                await context.close()
-                async with config.context_lock:
-                    config._context_requests.pop(context_id, None)
-                context = await create_context(browser, playwright_proxy)
-                async with config.context_lock:
-                    config._context_requests[id(context)] = 0
-                page = await context.new_page()
-
+            context, page = await _maybe_rotate_context(
+                context, page, config, worker_id, "processing", browser
+            )
             try:
-                await process_filter_jobs(
-                    page=page,
-                    link=link,
-                    percentage=pct,
-                    config=config,
-                )
+                await process_filter_jobs(page=page, link=link, percentage=pct, config=config)
             except Exception as e:
                 Actor.log.error(f"❌ Processing worker {worker_id} error: {e}")
             finally:

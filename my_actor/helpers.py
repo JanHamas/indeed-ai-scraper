@@ -1,7 +1,6 @@
 """
 src/helpers.py
 All dataclasses, config builder, and utility functions.
-Django-free: logging goes to Actor.log, storage to Apify KV store / dataset.
 """
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse, parse_qs, urlencode, quote_plus
 from dotenv import load_dotenv
 
 from apify import Actor
@@ -22,16 +22,123 @@ from .config import ScraperSettings
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SemanticMatcher  (same model, no Django dependency)
-# ─────────────────────────────────────────────────────────────────────────────# ─────────────────────────────────────────────────────────────────────────────
-# Semantic Job Title Matcher
+# Indeed search URL builder
 # ─────────────────────────────────────────────────────────────────────────────
-if not os.getenv("APP_ENV") == "local":
+
+def build_indeed_search_urls(
+    keywords:    list[str],
+    location:    str,
+    country:     str,
+    max_results: int,
+) -> list[str]:
+    """
+    Build Indeed search URLs from keywords + location + country.
+    One URL per keyword line, with pagination limited to max_results.
+    Country must be a key in ScraperSettings.indeed_country_domains.
+    """
+    base_domain = ScraperSettings.indeed_country_domains.get(
+        country.lower().strip(), ScraperSettings.indeed_country_domains["us"]
+    )
+    urls = []
+    for kw in keywords:
+        kw = kw.strip()
+        if not kw:
+            continue
+        params = {"q": kw}
+        if location and location.strip():
+            params["l"] = location.strip()
+        # max_results caps pagination — enqueue only up to this many results
+        # We pass it through metadata on the URL itself via a custom fragment
+        base = f"{base_domain}/jobs?{urlencode(params)}"
+        urls.append(base)
+    Actor.log.info(
+        f"🔧 Built {len(urls)} search URL(s) for {len(keywords)} keyword(s) "
+        f"| country={country} | location='{location}' | max_per_search={max_results}"
+    )
+    return urls
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Proxy file loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_proxies_from_text(raw_text: str) -> list[str]:
+    """
+    Parse a newline-separated proxy list.
+    Supports: http://user:pass@host:port  |  host:port:user:pass  |  host:port
+    """
+    proxies = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("http://", "https://", "socks5://")):
+            proxies.append(line)
+            continue
+        parts = line.split(":")
+        if len(parts) == 4:
+            host, port, user, password = parts
+            proxies.append(f"http://{user}:{password}@{host}:{port}")
+        elif len(parts) == 2:
+            proxies.append(f"http://{line}")
+        else:
+            Actor.log.warning(f"⚠️ Unrecognised proxy format, skipping: {line}")
+    Actor.log.info(f"📋 Loaded {len(proxies)} proxies from input")
+    return proxies
+
+
+class ProxyRotator:
+    """Round-robin proxy picker. Falls back to None (direct) when empty."""
+    def __init__(self, proxies: list[str]):
+        self._proxies = proxies
+        self._index   = 0
+        self._lock    = asyncio.Lock()
+
+    async def next(self) -> dict | None:
+        if not self._proxies:
+            return None
+        async with self._lock:
+            proxy = self._proxies[self._index % len(self._proxies)]
+            self._index += 1
+        return {"server": proxy}
+
+    @property
+    def has_proxies(self) -> bool:
+        return bool(self._proxies)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Indeed job-ID extractor (for "already processed" URL list)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_job_ids_from_urls(url_list: list[str]) -> set[str]:
+    """Extract jk= param from Indeed job-detail URLs."""
+    ids: set[str] = set()
+    for url in url_list:
+        url = url.strip()
+        if not url:
+            continue
+        try:
+            params = parse_qs(urlparse(url).query)
+            jk = params.get("jk", [""])[0]
+            if jk:
+                ids.add(jk)
+        except Exception:
+            pass
+    if ids:
+        Actor.log.info(f"📂 Extracted {len(ids)} job IDs from processed_job_urls input")
+    return ids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SemanticMatcher (optional — only loaded when about_me is provided)
+# ─────────────────────────────────────────────────────────────────────────────
+
+if os.getenv("APP_ENV") != "local":
     import torch
     from sentence_transformers import SentenceTransformer
     from sentence_transformers.util import batch_to_device, cos_sim
 
-    # ── Universal grammar abbreviations — safe for every domain ─────────────
     _UNIVERSAL_ABBR: Dict[str, str] = {
         r'\bsr\.?\b':     'senior',
         r'\bjr\.?\b':     'junior',
@@ -52,7 +159,6 @@ if not os.getenv("APP_ENV") == "local":
         r'\bcfo\b':       'chief financial officer',
     }
 
-    # ── Noise stripped from every job title ──────────────────────────────────
     _NOISE_RE = re.compile(
         r'\(.*?\)|\[.*?\]'
         r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
@@ -64,52 +170,29 @@ if not os.getenv("APP_ENV") == "local":
     _SEP_RE        = re.compile(r'[-–—|·•/\\]')
     _WHITESPACE_RE = re.compile(r'\s+')
 
-
     def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
-        """
-        Learns abbreviations purely from the user's own about_me text.
-        No hardcoded domain knowledge — works for ANY field.
-
-        Detects:
-          1. ABBR (Full Form) / Full Form (ABBR)  — parenthetical definitions
-          2. CamelCase tokens                      — MLOps → ml ops
-          3. Special-char symbols                  — C# → c, .NET → net, M&A → ma
-        """
         abbr_map: Dict[str, str] = {}
-
-        # ── Parenthetical definitions ─────────────────────────────────────────
-        paren_re = re.compile(
-            r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)'
-        )
+        paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
         for m in paren_re.finditer(about_me):
-            left  = m.group(1).strip()
-            right = m.group(2).strip()
-
-            left_score  = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
-            right_score = sum(1 for c in right if c.isupper()) / max(len(right), 1)
-
-            if len(left) <= 8 and left_score >= right_score:
+            left, right = m.group(1).strip(), m.group(2).strip()
+            ls = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
+            rs = sum(1 for c in right if c.isupper()) / max(len(right), 1)
+            if len(left) <= 8 and ls >= rs:
                 abbr, expansion = left, right
-            elif len(right) <= 8 and right_score > left_score:
+            elif len(right) <= 8 and rs > ls:
                 abbr, expansion = right, left
             else:
                 continue
-
             if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
                 abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
-
-        # ── CamelCase → spaced words ──────────────────────────────────────────
         camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
         for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
-            parts  = camel_split.split(token)
+            parts = camel_split.split(token)
             spaced = ' '.join(parts).lower()
             if spaced != token.lower() and len(parts) > 1:
                 abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
-
-        # ── Special-char symbols ──────────────────────────────────────────────
         symbol_re = re.compile(
-            r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b'
-            r'|(\.[A-Z][A-Za-z0-9]+)'
+            r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b|(\.[A-Z][A-Za-z0-9]+)'
         )
         for m in symbol_re.finditer(about_me):
             symbol = (m.group(1) or m.group(2)).strip()
@@ -118,9 +201,7 @@ if not os.getenv("APP_ENV") == "local":
             normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
             if normalized and normalized != symbol.lower():
                 abbr_map[re.escape(symbol)] = normalized
-
         return abbr_map
-
 
     def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
         compiled = []
@@ -131,174 +212,82 @@ if not os.getenv("APP_ENV") == "local":
                 pass
         return compiled
 
-
     class SemanticMatcher:
-        # ── JobBERT-v2: purpose-built for job title similarity ────────────────
-        # Trained on 5.5M+ real job title pairs (TalentCLEF MAP@10 = 0.6457).
         MODEL_NAME = "TechWolf/JobBERT-v2"
 
         def __init__(self, model_name: str = MODEL_NAME):
-            self._model                                      = SentenceTransformer(model_name)
-            self._lock                                       = asyncio.Lock()
+            self._model          = SentenceTransformer(model_name)
+            self._lock           = asyncio.Lock()
             self._cached_keywords: Optional[str]             = None
-            self._query_embeddings                           = None   # shape (n_queries, dim)
+            self._query_embeddings                           = None
             self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
 
-        # ── JobBERT-v2 requires this custom encode ────────────────────────────
         def _encode(self, texts: List[str]):
-            """
-            Forward pass through JobBERT-v2's job-specific projection head.
-            text_keys=["anchor"] tells the model these are the primary texts
-            (vs. positive/negative pairs used during contrastive training).
-            Returns normalized embeddings ready for cosine similarity.
-            """
             features = self._model.tokenize(texts)
             features = batch_to_device(features, self._model.device)
             features["text_keys"] = ["anchor"]
             with torch.no_grad():
                 out = self._model.forward(features)
-            # Normalize so cosine_sim == dot_product (consistent with training)
             emb = out["sentence_embedding"]
-            emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-            return emb
+            return torch.nn.functional.normalize(emb, p=2, dim=1)
 
         def _refresh_if_needed(self, user_keywords: str) -> None:
-            """
-            Re-learn abbreviations + re-encode ALL query embeddings only when
-            about_me changes. One embedding per role line — not one averaged blob.
-            """
             if user_keywords == self._cached_keywords:
                 return
-
-            # ── Abbreviation learning (unchanged from original) ───────────────
             abbr_map            = _extract_abbr_from_user_text(user_keywords)
             self._compiled_abbr = _compile_patterns(abbr_map)
-
-            # ── Parse about_me into individual role lines ─────────────────────
-            # Split on newlines, commas, pipes, bullets — whatever the user typed.
-            # Each non-empty token becomes its own query embedding.
-            tokens = [
-                t.strip()
-                for t in re.split(r'[\n\r,|/•·]+', user_keywords)
-                if t.strip() and len(t.strip()) > 1
-            ]
-
+            tokens = [t.strip() for t in re.split(r'[\n\r,|/•·]+', user_keywords) if t.strip() and len(t.strip()) > 1]
             if not tokens:
-                # Fallback: treat entire about_me as one query
                 tokens = [user_keywords.strip()]
-
-            # Deduplicate while preserving order
             seen, unique_tokens = set(), []
             for t in tokens:
                 k = t.lower()
                 if k not in seen:
                     seen.add(k)
                     unique_tokens.append(t)
-
-            # One focused query per role — no dilution from averaging
-            queries = [f"Job title: {t}" for t in unique_tokens]
-
-            # Encode all queries in a single batch call
-            self._query_embeddings = self._encode(queries)  # shape (n_queries, dim)
+            self._query_embeddings = self._encode([f"Job title: {t}" for t in unique_tokens])
             self._cached_keywords  = user_keywords
 
         def _clean_title(self, title: str) -> str:
-            """
-            Normalize a job title:
-              1. Universal grammar abbreviations  (Sr → senior, VP → vice president)
-              2. User-derived abbreviations        (learned from their about_me only)
-              3. Noise stripping                   (location, work-type, punctuation)
-            Zero hardcoded domain knowledge.
-            """
             t = title.lower()
-
             for pattern, replacement in _UNIVERSAL_ABBR.items():
                 t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
-
             for compiled_re, replacement in self._compiled_abbr:
                 t = compiled_re.sub(replacement, t)
-
             t = _NOISE_RE.sub(' ', t)
             t = _SEP_RE.sub(' ', t)
-            t = _WHITESPACE_RE.sub(' ', t).strip()
-            return t
+            return _WHITESPACE_RE.sub(' ', t).strip()
 
-        def _score(
-            self,
-            user_keywords: str,
-            job_titles:    List[str],
-        ) -> List[float]:
-            """
-            Score a batch of job titles against the user's task.
-
-            Steps:
-              1. Refresh query embeddings if about_me changed.
-              2. Clean + encode all titles in one batch.
-              3. Compute cosine similarity matrix (n_queries × n_titles).
-              4. Max-pool: each title gets score from its best-matching query.
-              5. Clip negatives → multiply by 100 → round to 2dp.
-            """
+        def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
             self._refresh_if_needed(user_keywords)
-
-            cleaned = [self._clean_title(t) for t in job_titles]
-
-            # Encode all job titles in a single forward pass
-            title_embeddings = self._encode(cleaned)  # shape (n_titles, dim)
-
-            # Similarity matrix: rows = queries, cols = titles
-            # cos_sim returns shape (n_queries, n_titles)
-            sim_matrix = cos_sim(self._query_embeddings, title_embeddings)
-
-            # Max-pool over queries: each title gets its best matching query score
-            # Shape: (n_titles,)
-            best_scores = sim_matrix.max(dim=0).values
-            best_scores = best_scores.cpu().numpy()
-
-            # Clip negatives, scale to percentage
+            title_embeddings = self._encode([self._clean_title(t) for t in job_titles])
+            best_scores      = cos_sim(self._query_embeddings, title_embeddings).max(dim=0).values.cpu().numpy()
             return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
 
-        async def match(
-            self,
-            user_keywords: str,
-            job_titles:    List[str],
-        ) -> List[float]:
-            """
-            Async entry point — offloads CPU-bound scoring to a thread executor
-            so the event loop stays unblocked during model inference.
-            """
+        async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
             if not user_keywords or not job_titles:
                 return []
-
             async with self._lock:
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(
-                    None, self._score, user_keywords, job_titles
-                )
+                return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
 
-
-    # ── Singleton — one model loaded for the entire process lifetime ──────────
     _matcher = SemanticMatcher()
 
 
-    async def get_match_percentages(
-        about_me: str,
-        job_titles:    List[str],
-    ) -> List[float]:
-        return await _matcher.match(about_me, job_titles)
-
-if os.getenv("APP_ENV") == "local":
-    async def get_match_percentages(
-        about_me: str,
-        job_titles:    List[str],
-    ) -> List[float]:
+async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[float]:
+    if not about_me or not about_me.strip():
+        return [100.0] * len(job_titles)
+    if os.getenv("APP_ENV") == "local":
         return [random.randint(0, 100) for _ in range(len(job_titles))]
+    return await _matcher.match(about_me, job_titles)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ScraperConfig  (Apify version — no Django fields)
+# ScraperConfig
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class ScraperConfig:
-    # Task settings
+    # Core
     about_me:             str
     ignore_companies:     List[str]
     ignore_related:       List[str]
@@ -308,13 +297,28 @@ class ScraperConfig:
     per_company_jobs:     int
     min_match_percentage: int
 
-    # Google Sheets (optional)
+    # Search builder settings (used when start_urls is empty)
+    search_keywords:     List[str] = field(default_factory=list)
+    search_location:     str       = ""
+    search_country:      str       = "us"
+    max_results_per_search: int    = 0   # 0 = unlimited
+
+    # Feature flags
+    scrape_company_details: bool = False  # fetch company profile page
+    save_unique_only:       bool = True   # deduplicate by (position, company)
+    follow_apply_redirect:  bool = False  # resolve external apply link
+
+    # Google Sheets
     google_sheet_url: str = ""
     sheet_name:       str = "Indeed Jobs"
 
     # Browser
     headless:     bool = True
     proxy_config: dict = field(default_factory=dict)
+
+    # Auth
+    account_cookies: List[dict]         = field(default_factory=list)
+    proxy_rotator:   "ProxyRotator | None" = field(default=None, repr=False)
 
     # Runtime state
     processed_uids: Set[str] = field(default_factory=set)
@@ -323,19 +327,24 @@ class ScraperConfig:
     ignored_companies_seen:    Set[str]   = field(default_factory=set)
     new_processed_company_jobs: List[str] = field(default_factory=list)
     extracted_jobs_counter:    int        = field(default=0, init=False)
-    _saved_jobs:               List[dict] = field(default_factory=list, init=False)  # for GSheet
+    _saved_jobs:               List[dict] = field(default_factory=list, init=False)
 
-    # Locks (created lazily — dataclass __post_init__)
+    # Unique-job fingerprints: set of "position|||company" strings
+    _seen_fingerprints: Set[str] = field(default_factory=set, init=False)
+
+    # Locks
     _lock:            asyncio.Lock = field(default=None, init=False, repr=False)
     _context_lock:    asyncio.Lock = field(default=None, init=False, repr=False)
     _uid_buffer_lock: asyncio.Lock = field(default=None, init=False, repr=False)
 
-    # Shared batch tracking
     _context_requests: Dict[int, int] = field(default_factory=dict, init=False)
     _uid_buffer:       List[str]      = field(default_factory=list, init=False)
     _saved_account_ids: Set[int]      = field(default_factory=set, init=False)
 
-    # ── Lock properties ───────────────────────────────────────────────────────
+    @property
+    def ai_matching_enabled(self) -> bool:
+        return bool(self.about_me and self.about_me.strip())
+
     @property
     def tracking_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -354,7 +363,6 @@ class ScraperConfig:
             self._uid_buffer_lock = asyncio.Lock()
         return self._uid_buffer_lock
 
-    # ── UID buffer ────────────────────────────────────────────────────────────
     async def buffer_uids(self, uids: list) -> None:
         async with self.uid_lock:
             self._uid_buffer.extend(uids)
@@ -365,7 +373,6 @@ class ScraperConfig:
             self._uid_buffer.clear()
             return uids
 
-    # ── Job gate ──────────────────────────────────────────────────────────────
     async def try_add_job(self, uid: str, company_name: str) -> bool:
         async with self.tracking_lock:
             if self.extracted_jobs_counter >= self.max_jobs:
@@ -390,11 +397,24 @@ class ScraperConfig:
             self.new_processed_company_jobs.append(company_name)
             return True
 
+    def is_duplicate_fingerprint(self, position: str, company: str) -> bool:
+        """
+        Returns True if this (position, company) pair has already been saved.
+        Only active when save_unique_only=True.
+        """
+        if not self.save_unique_only:
+            return False
+        fp = f"{position.strip().lower()}|||{company.strip().lower()}"
+        if fp in self._seen_fingerprints:
+            return True
+        self._seen_fingerprints.add(fp)
+        return False
+
     async def confirm_filtered_jobs(
         self, links: list, percentages: list
     ) -> tuple[list, list]:
         async with self.tracking_lock:
-            remaining     = self.max_jobs - self.extracted_jobs_counter
+            remaining      = self.max_jobs - self.extracted_jobs_counter
             if remaining <= 0:
                 return [], []
             accepted_count = min(len(links), remaining)
@@ -406,25 +426,35 @@ class ScraperConfig:
             return self.extracted_jobs_counter >= self.max_jobs
 
     def total_queued(self) -> int:
-        return 0   # no named sub-queues; approximate via filter_queue externally
+        return 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config builder
 # ─────────────────────────────────────────────────────────────────────────────
 def load_scraper_config(
-    url_list:            list[str],
-    about_me:            str,
-    ignore_companies_raw: str,
-    ignore_related_raw:   str,
-    max_jobs:            int,
-    per_company_jobs:    int,
-    min_match_percentage: int,
-    concurrency:         int,
-    google_sheet_url:    str = "",
-    sheet_name:          str = "Indeed Jobs",
-    headless:            bool = True,
-    proxy_config:        dict = None,
+    url_list:               list[str],
+    about_me:               str,
+    ignore_companies_raw:   str,
+    ignore_related_raw:     str,
+    max_jobs:               int,
+    per_company_jobs:       int,
+    min_match_percentage:   int,
+    concurrency:            int,
+    processed_uids:         set[str],
+    account_cookies:        list[dict],
+    proxy_rotator:          "ProxyRotator | None",
+    search_keywords:        list[str],
+    search_location:        str,
+    search_country:         str,
+    max_results_per_search: int,
+    scrape_company_details: bool,
+    save_unique_only:       bool,
+    follow_apply_redirect:  bool,
+    google_sheet_url:       str  = "",
+    sheet_name:             str  = "Indeed Jobs",
+    headless:               bool = True,
+    proxy_config:           dict = None,
 ) -> ScraperConfig:
     ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
     ignore_related   = [kw.strip().lower() for kw in ignore_related_raw.splitlines() if kw.strip()]
@@ -438,43 +468,38 @@ def load_scraper_config(
         max_jobs=max_jobs,
         per_company_jobs=per_company_jobs,
         min_match_percentage=min_match_percentage,
+        search_keywords=search_keywords,
+        search_location=search_location,
+        search_country=search_country,
+        max_results_per_search=max_results_per_search,
+        scrape_company_details=scrape_company_details,
+        save_unique_only=save_unique_only,
+        follow_apply_redirect=follow_apply_redirect,
         google_sheet_url=google_sheet_url,
         sheet_name=sheet_name,
         headless=headless,
         proxy_config=proxy_config or {},
+        processed_uids=processed_uids,
+        account_cookies=account_cookies,
+        proxy_rotator=proxy_rotator,
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logging helpers (Actor.log replaces Django log_dispatcher)
+# Logging helpers
 # ─────────────────────────────────────────────────────────────────────────────
 async def log(level: str, message: str) -> None:
-    """Thin wrapper so workers can call await log('info', '…')."""
     fn = getattr(Actor.log, level, Actor.log.info)
     fn(message)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UID persistence via Apify KV store (replaces Django ORM)
+# UID persistence
 # ─────────────────────────────────────────────────────────────────────────────
 _KV_UID_KEY = "processed_uids"
 
 
-async def load_processed_uids() -> set:
-    """Load previously processed UIDs from Apify Key-Value store."""
-    try:
-        kv    = await Actor.open_key_value_store()
-        value = await kv.get_value(_KV_UID_KEY)
-        if isinstance(value, list):
-            Actor.log.info(f"📂 Loaded {len(value)} previously processed UIDs")
-            return set(value)
-    except Exception as e:
-        Actor.log.warning(f"⚠️ Could not load processed UIDs: {e}")
-    return set()
-
-
 async def save_processed_uids(uids: list) -> None:
-    """Persist new UIDs to Apify Key-Value store (merge with existing)."""
     if not uids:
         return
     try:
@@ -492,34 +517,102 @@ async def update_processed_uids(uids: list) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data push (replaces Django model + data_dispatcher)
+# Data push
 # ─────────────────────────────────────────────────────────────────────────────
 async def push_job_data(data: dict, config: ScraperConfig) -> None:
-    """Push one scraped job to the Apify dataset and buffer it for GSheet."""
     try:
         await Actor.push_data(data)
-        config._saved_jobs.append(data)   # kept in memory for GSheet upload
+        config._saved_jobs.append(data)
     except Exception as e:
         Actor.log.warning(f"⚠️ Failed to push data: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Browser context creation (Apify version — proxies via playwright_proxy arg)
+# Browser context creation
 # ─────────────────────────────────────────────────────────────────────────────
 async def create_context(browser, playwright_proxy: dict | None = None):
-    """
-    Creates a new Playwright browser context.
-    playwright_proxy: {"server": "http://...", "username": ..., "password": ...}
-    """
     context_options: dict = {"no_viewport": True}
     if playwright_proxy:
         context_options["proxy"] = playwright_proxy
-
     return await browser.new_context(**context_options)
 
 
+async def create_context_with_cookies(
+    browser,
+    config: ScraperConfig,
+    playwright_proxy: dict | None = None,
+) -> Any:
+    proxy = playwright_proxy
+    if proxy is None and config.proxy_rotator and config.proxy_rotator.has_proxies:
+        proxy = await config.proxy_rotator.next()
+    context = await create_context(browser, proxy)
+    if config.account_cookies:
+        try:
+            await context.add_cookies(config.account_cookies)
+        except Exception as e:
+            Actor.log.warning(f"⚠️ Could not inject cookies: {e}")
+    return context
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Human-behaviour simulation (unchanged)
+# Indeed login flow
+# ─────────────────────────────────────────────────────────────────────────────
+async def indeed_login(
+    browser,
+    config: ScraperConfig,
+    playwright_proxy: dict | None,
+    email: str,
+    password: str,
+) -> list[dict]:
+    Actor.log.info("🔐 No cookies provided — attempting Indeed login...")
+    context = await create_context(browser, playwright_proxy)
+    page    = await context.new_page()
+    try:
+        await page.goto(ScraperSettings.indeed_login_url, wait_until="load")
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+
+        email_input = page.locator('input[type="email"], input[name="__email"]').first
+        await email_input.wait_for(state="visible", timeout=15000)
+        await email_input.fill(email)
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        continue_btn = page.locator(
+            'button[type="submit"], button:has-text("Continue"), button:has-text("Sign in")'
+        ).first
+        await continue_btn.click()
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+
+        try:
+            pwd_input = page.locator('input[type="password"]').first
+            await pwd_input.wait_for(state="visible", timeout=10000)
+            await pwd_input.fill(password)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await page.locator('button[type="submit"]').first.click()
+            await asyncio.sleep(random.uniform(3.0, 5.0))
+        except PlaywrightTimeoutError:
+            Actor.log.warning("⚠️ Password field not found — may require CAPTCHA or 2FA")
+
+        try:
+            await page.wait_for_url(
+                lambda url: "login" not in url and "secure" not in url,
+                timeout=15000,
+            )
+            Actor.log.info("✅ Indeed login successful")
+        except PlaywrightTimeoutError:
+            Actor.log.warning("⚠️ Still on login page — continuing with whatever cookies were set")
+
+        cookies = await context.cookies()
+        Actor.log.info(f"🍪 Captured {len(cookies)} cookies after login")
+        return cookies
+    except Exception as e:
+        Actor.log.error(f"❌ Login failed: {e}")
+        return []
+    finally:
+        await context.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Human-behaviour simulation
 # ─────────────────────────────────────────────────────────────────────────────
 async def simulate_human_behavior(page: Page) -> None:
     await asyncio.sleep(random.uniform(0.2, 0.5))
@@ -562,9 +655,19 @@ async def get_total_jobs(page: Page) -> int:
 
 
 async def build_and_enqueue_jobs_search_urls(
-    total_jobs: int, base_url: str, url_queue: asyncio.Queue
+    total_jobs: int,
+    base_url:   str,
+    url_queue:  asyncio.Queue,
+    max_results_per_search: int = 0,
 ) -> None:
-    for start in range(10, total_jobs, 10):
+    """
+    Enqueue pagination URLs. If max_results_per_search > 0, only enqueue
+    enough pages to reach that cap (each page has 10 results).
+    """
+    cap = total_jobs
+    if max_results_per_search > 0:
+        cap = min(total_jobs, max_results_per_search)
+    for start in range(10, cap, 10):
         await url_queue.put(f"{base_url}&start={start}")
 
 
@@ -581,7 +684,7 @@ def clear_queue(q: asyncio.Queue) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Job info extractors (unchanged from original)
+# Job info extractors
 # ─────────────────────────────────────────────────────────────────────────────
 async def extract_salary_job_types(page: Page):
     container = page.locator("#salaryInfoAndJobType")
@@ -615,8 +718,8 @@ async def extract_rating_and_reviews(page: Page) -> dict:
     if await review_block.count() == 0:
         return {"rating": 0.0, "review_count": 0}
 
-    rating      = 0.0
-    rating_div  = review_block.locator('div[role="img"]').first
+    rating     = 0.0
+    rating_div = review_block.locator('div[role="img"]').first
     if await rating_div.count() > 0:
         aria_label = await rating_div.get_attribute("aria-label")
         if aria_label:
@@ -640,6 +743,65 @@ async def extract_external_apply_link(page: Page) -> str:
         href = await btn.get_attribute("href")
         return href or ""
     return ""
+
+
+async def resolve_redirect(page: Page, url: str) -> str:
+    """
+    Follow redirects on an external apply link and return the final URL.
+    Uses a lightweight fetch (no rendering) to avoid opening a full page.
+    """
+    if not url:
+        return ""
+    try:
+        result = await page.evaluate(
+            """async (url) => {
+                try {
+                    const resp = await fetch(url, {method: 'HEAD', redirect: 'follow'});
+                    return resp.url;
+                } catch(e) {
+                    return url;
+                }
+            }""",
+            url,
+        )
+        return result or url
+    except Exception:
+        return url
+
+
+async def scrape_company_details(page: Page, company_name: str) -> dict:
+    """
+    Visit the Indeed company page and extract size, industry, and description.
+    Returns a dict with company_size, company_industry, company_description.
+    Falls back to empty strings on any error.
+    """
+    result = {"company_size": "", "company_industry": "", "company_description": ""}
+    try:
+        search_slug = re.sub(r'\s+', '-', company_name.strip().lower())
+        # Indeed company pages follow /cmp/<slug>
+        company_url = f"https://www.indeed.com/cmp/{search_slug}"
+        await page.goto(company_url, wait_until="load", timeout=15000)
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        # Company size
+        size_loc = page.locator('[data-testid="companyInfo-employee-count"], [data-tn-element="company-employee-count"]').first
+        if await size_loc.count() > 0:
+            result["company_size"] = (await size_loc.inner_text()).strip()
+
+        # Industry
+        industry_loc = page.locator('[data-testid="companyInfo-industry"], [data-tn-element="company-industry"]').first
+        if await industry_loc.count() > 0:
+            result["company_industry"] = (await industry_loc.inner_text()).strip()
+
+        # Description (first paragraph)
+        desc_loc = page.locator('[data-testid="aboutSection"] p, .cmp-AboutSection p').first
+        if await desc_loc.count() > 0:
+            result["company_description"] = (await desc_loc.inner_text()).strip()[:500]
+
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Company detail scrape failed for '{company_name}': {e}")
+
+    return result
 
 
 def is_ignored(company_name: str, ignore_companies: list[str]) -> tuple[bool, str]:
@@ -701,23 +863,22 @@ def check_remote_status(description: str, location: str = "", remote_badge: str 
 async def flush_batch(
     config: ScraperConfig,
     batch_positions: list[str],
-    batch_links: list[str],
-    batch_uids: list[str],
-    filter_queue: asyncio.Queue,
+    batch_links:     list[str],
+    batch_uids:      list[str],
+    filter_queue:    asyncio.Queue,
 ) -> None:
     percentages = await get_match_percentages(config.about_me, batch_positions)
+    threshold   = config.min_match_percentage if config.ai_matching_enabled else 0
 
     passed_links: list[str]   = []
     passed_pcts:  list[float] = []
     for link, pct in zip(batch_links, percentages):
-        if pct >= config.min_match_percentage:
+        if pct >= threshold:
             passed_links.append(link)
             passed_pcts.append(pct)
 
     if passed_links:
-        accepted_links, accepted_pcts = await config.confirm_filtered_jobs(
-            passed_links, passed_pcts
-        )
+        accepted_links, accepted_pcts = await config.confirm_filtered_jobs(passed_links, passed_pcts)
         for link, pct in zip(accepted_links, accepted_pcts):
             await filter_queue.put((link, pct))
         if accepted_links:
@@ -735,10 +896,10 @@ async def flush_batch(
 async def _flush_shared_batch(
     config: ScraperConfig,
     batch_positions: list,
-    batch_links: list,
-    batch_uids: list,
-    batch_lock: asyncio.Lock,
-    filter_queue: asyncio.Queue,
+    batch_links:     list,
+    batch_uids:      list,
+    batch_lock:      asyncio.Lock,
+    filter_queue:    asyncio.Queue,
 ) -> None:
     async with batch_lock:
         if not batch_positions:
@@ -780,14 +941,27 @@ async def status_logger(config: ScraperConfig, stop_event: asyncio.Event) -> Non
 # ─────────────────────────────────────────────────────────────────────────────
 async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info("=" * 80)
-    Actor.log.info(f"🎯 Max jobs:        {config.max_jobs}")
-    Actor.log.info(f"🔗 Job URLs:        {len(config.url_queue)}")
-    Actor.log.info(f"⚡ Concurrency:     {config.concurrency}")
-    Actor.log.info(f"🏢 Per company:     {config.per_company_jobs}")
-    Actor.log.info(f"📌 Min match:       {config.min_match_percentage}%")
-    Actor.log.info(f"🚫 Ignore companies:{len(config.ignore_companies)} | {config.ignore_companies[:5]}")
-    Actor.log.info(f"🚫 Ignore related:  {config.ignore_related}")
-    Actor.log.info(f"📚 Prev processed:  {len(config.processed_uids)}")
-    Actor.log.info(f"👻 Headless:        {config.headless}")
+    Actor.log.info(f"🎯 Max jobs:            {config.max_jobs}")
+    Actor.log.info(f"🔗 Search URLs:         {len(config.url_queue)}")
+    if config.search_keywords:
+        Actor.log.info(f"🔑 Keywords:            {config.search_keywords}")
+        Actor.log.info(f"📍 Location:            '{config.search_location}' | country={config.search_country}")
+        if config.max_results_per_search:
+            Actor.log.info(f"📄 Max per search:      {config.max_results_per_search}")
+    Actor.log.info(f"⚡ Concurrency:         {config.concurrency}")
+    Actor.log.info(f"🏢 Per company:         {config.per_company_jobs}")
+    if config.ai_matching_enabled:
+        Actor.log.info(f"🤖 AI matching:         ON  |  min score: {config.min_match_percentage}%")
+    else:
+        Actor.log.info("🤖 AI matching:         OFF (all jobs collected)")
+    Actor.log.info(f"🏭 Company details:     {'ON' if config.scrape_company_details else 'OFF'}")
+    Actor.log.info(f"🔁 Unique jobs only:    {'ON' if config.save_unique_only else 'OFF'}")
+    Actor.log.info(f"🔗 Follow apply link:   {'ON' if config.follow_apply_redirect else 'OFF'}")
+    Actor.log.info(f"🚫 Ignore companies:    {len(config.ignore_companies)}")
+    Actor.log.info(f"🚫 Ignore related:      {config.ignore_related}")
+    Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")
+    Actor.log.info(f"🍪 Cookies:             {'provided' if config.account_cookies else 'not provided'}")
+    Actor.log.info(f"🌐 Proxy rotator:       {'active' if config.proxy_rotator and config.proxy_rotator.has_proxies else 'not configured'}")
+    Actor.log.info(f"👻 Headless:            {config.headless}")
     Actor.log.info("=" * 80)
     Actor.log.info("🏃 Starting scraper execution…")

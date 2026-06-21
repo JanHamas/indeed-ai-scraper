@@ -1,7 +1,6 @@
 """
 src/job_scraper.py
 Scrapes full job details from a single Indeed job page.
-Replaces data_dispatcher.emit() with Actor.push_data() via push_job_data().
 """
 from __future__ import annotations
 
@@ -20,6 +19,8 @@ from .helpers import (
     extract_salary_job_types,
     extract_rating_and_reviews,
     extract_external_apply_link,
+    resolve_redirect,
+    scrape_company_details as fetch_company_details,
     check_remote_status,
     push_job_data,
 )
@@ -33,7 +34,7 @@ async def process_filter_jobs(
 ) -> bool:
     """
     Scrape full job details from an Indeed job URL.
-    Returns True if extracted successfully, False otherwise.
+    Returns True if saved successfully, False otherwise.
     """
     fields = ScraperSettings.extraction_fields
     data   = {field: "" for field in fields}
@@ -91,6 +92,13 @@ async def process_filter_jobs(
             return False
         data["position"] = position_text.strip()
 
+        # ── Unique fingerprint check (position + company) ─────────────────────
+        if config.is_duplicate_fingerprint(data["position"], data["company"]):
+            Actor.log.info(
+                f"⏭ Duplicate skipped: '{data['position']}' @ '{data['company']}'"
+            )
+            return False
+
         # ── Salary & Job Types ────────────────────────────────────────────────
         (
             data["salary"],
@@ -111,8 +119,19 @@ async def process_filter_jobs(
         apply_exists = (
             await page.locator('button[aria-label*="Apply on company site"]').count() > 0
         )
-        data["apply_type"]           = "CS Apply" if apply_exists else "Easy Apply"
-        data["external_apply_link"]  = await extract_external_apply_link(page)
+        data["apply_type"] = "CS Apply" if apply_exists else "Easy Apply"
+
+        # ── External apply link (+ optional redirect resolution) ──────────────
+        raw_apply_link = await extract_external_apply_link(page)
+        data["external_apply_link"] = raw_apply_link
+
+        if config.follow_apply_redirect and raw_apply_link:
+            resolved = await resolve_redirect(page, raw_apply_link)
+            data["resolved_apply_link"] = resolved
+            if resolved != raw_apply_link:
+                Actor.log.info(f"🔗 Resolved apply link: {resolved}")
+        else:
+            data["resolved_apply_link"] = raw_apply_link
 
         # ── Benefits ──────────────────────────────────────────────────────────
         benefit_items = await page.locator('[data-testid="benefits-test"] ul li').all()
@@ -120,7 +139,7 @@ async def process_filter_jobs(
         for li in benefit_items:
             text = await li.inner_text()
             if text:
-                benefits += f"{text.strip()} \n"
+                benefits += f"{text.strip()}\n"
         data["benefits"] = benefits
 
         # ── Description ───────────────────────────────────────────────────────
@@ -150,7 +169,7 @@ async def process_filter_jobs(
         )
 
         # ── Job ID ────────────────────────────────────────────────────────────
-        params        = urllib.parse.parse_qs(urllib.parse.urlparse(page.url).query)
+        params         = urllib.parse.parse_qs(urllib.parse.urlparse(page.url).query)
         data["job_id"] = params.get("jk", [""])[0]
         if not data["job_id"]:
             Actor.log.warning(f"⚠️ No job_id found: {link}")
@@ -167,9 +186,23 @@ async def process_filter_jobs(
         data["rating"]       = float(rr.get("rating") or 0)
         data["review_count"] = int(rr.get("review_count") or 0)
 
+        # ── Company details (optional — visits /cmp/<slug>) ───────────────────
+        if config.scrape_company_details:
+            company_info = await fetch_company_details(page, data["company"])
+            data["company_size"]        = company_info.get("company_size", "")
+            data["company_industry"]    = company_info.get("company_industry", "")
+            data["company_description"] = company_info.get("company_description", "")
+        else:
+            data["company_size"]        = ""
+            data["company_industry"]    = ""
+            data["company_description"] = ""
+
         # ── Push to Apify dataset ─────────────────────────────────────────────
         await push_job_data(data, config)
-        Actor.log.info(f"✅ Extracted: {data['position']} @ {data['company']} → {percentage}%")
+        Actor.log.info(
+            f"✅ Extracted: {data['position']} @ {data['company']}"
+            + (f" → {percentage}%" if config.ai_matching_enabled else "")
+        )
         return True
 
     except Exception as e:
