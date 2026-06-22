@@ -12,15 +12,6 @@
       "prefill": ""
     },
 
-    "max_results_per_search": {
-      "title": "📄 Max Job Listings per Search",
-      "type": "integer",
-      "description": "Maximum number of job listings to scrape per keyword search. For example, if you have 3 keywords and set this to 50, the scraper will fetch up to 50 listings per keyword (150 total before filtering).\n\nSet to 0 for no limit — all available listings will be scraped.",
-      "default": 50,
-      "minimum": 0,
-      "maximum": 1000
-    },
-
     "search_country": {
       "title": "🌍 Country for Search",
       "type": "string",
@@ -136,26 +127,9 @@
     "account_cookies": {
       "title": "🍪 Indeed Account Cookies (optional — recommended)",
       "type": "array",
-      "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install 'Cookie-Editor' or 'EditThisCookie' extension.\n3. Export cookies as JSON and paste here.",
+      "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install 'https://chromewebstore.google.com/detail/nmckokihipjgplolmcmjakknndddifde?utm_source=item-share-cb' extension.\n3. Export cookies as JSON and paste here.",
       "editor": "json",
       "prefill": []
-    },
-
-    "indeed_email": {
-      "title": "📧 Indeed Email (alternative to cookies)",
-      "type": "string",
-      "description": "Used only when 'Account Cookies' is empty. The scraper will log in automatically. Note: Indeed may trigger CAPTCHA — providing cookies directly is more reliable.",
-      "editor": "textfield",
-      "prefill": ""
-    },
-
-    "indeed_password": {
-      "title": "🔑 Indeed Password (alternative to cookies)",
-      "type": "string",
-      "description": "Used only when 'Account Cookies' is empty and 'Indeed Email' is filled.",
-      "editor": "textfield",
-      "isSecret": true,
-      "prefill": ""
     },
 
     "proxy_list": {
@@ -164,13 +138,6 @@
       "description": "Your own proxies, one per line. Rotated each time a browser context is recreated (every 1000 requests).\n\nSupported formats:\n  http://user:pass@host:port\n  host:port:user:pass\n  host:port",
       "editor": "textarea",
       "prefill": ""
-    },
-
-    "proxy_config": {
-      "title": "🛡️ Apify Proxy (fallback if no proxy list)",
-      "type": "object",
-      "description": "Apify's built-in proxy. Only used when 'Proxy List' is empty.",
-      "editor": "proxy"
     },
 
     "google_sheet_url": {
@@ -195,13 +162,6 @@
       "default": 5,
       "minimum": 1,
       "maximum": 10
-    },
-
-    "headless": {
-      "title": "👻 Headless Browser",
-      "type": "boolean",
-      "description": "Run the browser without a visible window. Disable only for local debugging.",
-      "default": true
     }
 
   },
