@@ -16,15 +16,10 @@ class ScraperSettings:
     # ── Browser context rotation ──────────────────────────────────────────────
     context_rotate_limit = 1000       # requests per context before recreation
 
-    # ── Skip flags ────────────────────────────────────────────────────────────
-    skip_ignore_related = True
-    skip_expired        = True
+    headless = True
 
     # ── Google Sheets (public URL mode) ──────────────────────────────────────
     gsheet_scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-
-    # ── Indeed URLs ───────────────────────────────────────────────────────────
-    indeed_login_url = "https://secure.indeed.com/account/login"
 
     # Map of country codes → Indeed base domains
     indeed_country_domains: dict[str, str] = {
@@ -50,22 +45,9 @@ class ScraperSettings:
 
     # ── Fields written to Apify dataset (Actor.push_data) ────────────────────
     extraction_fields = [
-        "position", "company", "url", "salary",
-        "jt0", "jt1", "jt2", "jt3",
-        "location", "apply_type", "benefits", "description",
-        "job_id", "is_expired", "is_remote",
-        "external_apply_link", "resolved_apply_link",
-        "rating", "review_count",
-        "company_size", "company_industry", "company_description",
-        "job_match", "ignore_related",
-    ]
+        "id","positionName","company","location","isRemote","jobType","salary","rating","reviewsCount","jobMatch","description","ignoreRelated","descriptionHTML","benefits","applyType","externalApplyLink","url","companyIndeedUrl","isExpired","postedAt","postingDateParsed","scrapedAt","searchInput","searchInput/country","searchInput/location","searchInput/position","urlInput"
+        "companyLogo",
+        ]
 
-    # ── Fields written to Google Sheets ──────────────────────────────────────
-    export_fields = [
-        "position", "company", "url", "salary",
-        "jt0", "is_remote", "location", "apply_type",
-        "benefits", "description", "rating", "review_count",
-        "company_size", "company_industry",
-        "job_match", "job_id", "external_apply_link", "resolved_apply_link",
-        "ignore_related", "is_expired",
-    ]
+
+

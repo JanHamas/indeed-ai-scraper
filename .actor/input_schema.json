@@ -52,15 +52,6 @@
       "prefill": ""
     },
 
-    "min_match_percentage": {
-      "title": "🤖 Minimum AI Match Score (0–100)",
-      "type": "integer",
-      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
-      "default": 40,
-      "minimum": 0,
-      "maximum": 100
-    },
-
     "max_jobs": {
       "title": "📦 Total Jobs to Collect",
       "type": "integer",

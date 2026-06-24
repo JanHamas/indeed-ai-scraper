@@ -555,63 +555,6 @@ async def create_context_with_cookies(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Indeed login flow
-# ─────────────────────────────────────────────────────────────────────────────
-async def indeed_login(
-    browser,
-    config: ScraperConfig,
-    playwright_proxy: dict | None,
-    email: str,
-    password: str,
-) -> list[dict]:
-    Actor.log.info("🔐 No cookies provided — attempting Indeed login...")
-    context = await create_context(browser, playwright_proxy)
-    page    = await context.new_page()
-    try:
-        await page.goto(ScraperSettings.indeed_login_url, wait_until="load")
-        await asyncio.sleep(random.uniform(1.5, 2.5))
-
-        email_input = page.locator('input[type="email"], input[name="__email"]').first
-        await email_input.wait_for(state="visible", timeout=15000)
-        await email_input.fill(email)
-        await asyncio.sleep(random.uniform(0.5, 1.0))
-
-        continue_btn = page.locator(
-            'button[type="submit"], button:has-text("Continue"), button:has-text("Sign in")'
-        ).first
-        await continue_btn.click()
-        await asyncio.sleep(random.uniform(1.5, 2.5))
-
-        try:
-            pwd_input = page.locator('input[type="password"]').first
-            await pwd_input.wait_for(state="visible", timeout=10000)
-            await pwd_input.fill(password)
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-            await page.locator('button[type="submit"]').first.click()
-            await asyncio.sleep(random.uniform(3.0, 5.0))
-        except PlaywrightTimeoutError:
-            Actor.log.warning("⚠️ Password field not found — may require CAPTCHA or 2FA")
-
-        try:
-            await page.wait_for_url(
-                lambda url: "login" not in url and "secure" not in url,
-                timeout=15000,
-            )
-            Actor.log.info("✅ Indeed login successful")
-        except PlaywrightTimeoutError:
-            Actor.log.warning("⚠️ Still on login page — continuing with whatever cookies were set")
-
-        cookies = await context.cookies()
-        Actor.log.info(f"🍪 Captured {len(cookies)} cookies after login")
-        return cookies
-    except Exception as e:
-        Actor.log.error(f"❌ Login failed: {e}")
-        return []
-    finally:
-        await context.close()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Human-behaviour simulation
 # ─────────────────────────────────────────────────────────────────────────────
 async def simulate_human_behavior(page: Page) -> None:
@@ -686,6 +629,93 @@ def clear_queue(q: asyncio.Queue) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Job info extractors
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _get_company(page: Page) -> str | None:
+    try:
+        await page.wait_for_selector('div[data-company-name="true"]', timeout=8000)
+    except Exception:
+        return None
+    selectors = [
+        'div[data-company-name="true"] a',
+        '[data-testid="inlineHeader-companyName"] span a',
+        'div[data-company-name="true"]',
+        '[data-testid="inlineHeader-companyName"]',
+    ]
+    for sel in selectors:
+        try:
+            el = await page.query_selector(sel)
+            if el:
+                text = (await el.inner_text()).strip().split("\n")[0].strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return None
+
+
+async def _get_company_indeed_url(page: Page) -> str:
+    """Return the href of the company's Indeed profile link if present."""
+    try:
+        link = page.locator(
+            '[data-testid="inlineHeader-companyName"] a, '
+            'div[data-company-name="true"] a'
+        ).first
+        if await link.count() > 0:
+            href = await link.get_attribute("href")
+            if href:
+                # Make absolute
+                if href.startswith("/"):
+                    return f"https://www.indeed.com{href}"
+                return href
+    except Exception:
+        pass
+    return ""
+
+
+
+async def _extract_posted_date(page: Page) -> tuple[str, str]:
+    """
+    Returns (raw_text, iso_date_string).
+    raw_text  → e.g. "Posted 3 days ago"
+    iso_date  → approximate ISO-8601 date calculated from "X days ago"
+    """
+    raw = ""
+    iso = ""
+    try:
+        # Indeed uses a <span> with data-testid or class for posting age
+        selectors = [
+            '[data-testid="myJobsStateDate"]',
+            'span.date',
+            'span[class*="date"]',
+            'span:has-text("Posted")',
+            'span:has-text("days ago")',
+            'span:has-text("Just posted")',
+            'span:has-text("Today")',
+        ]
+        for sel in selectors:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                raw = (await loc.inner_text()).strip()
+                break
+
+        if raw:
+            now = datetime.now(timezone.utc)
+            m   = re.search(r'(\d+)\s+day', raw, re.IGNORECASE)
+            if m:
+                from datetime import timedelta
+                delta = timedelta(days=int(m.group(1)))
+                iso   = (now - delta).date().isoformat()
+            elif re.search(r'today|just posted|hour|minute', raw, re.IGNORECASE):
+                iso = now.date().isoformat()
+            elif re.search(r'30\+', raw):
+                from datetime import timedelta
+                iso = (now - timedelta(days=30)).date().isoformat()
+
+    except Exception:
+        pass
+    return raw, iso
+
 async def extract_salary_job_types(page: Page):
     container = page.locator("#salaryInfoAndJobType")
     salary    = ""
@@ -710,7 +740,7 @@ async def extract_salary_job_types(page: Page):
             text      = await spans.first.inner_text()
             job_types = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
 
-    return (salary, *(job_types + [""] * 4)[:4])
+    return (salary, job_types)
 
 
 async def extract_rating_and_reviews(page: Page) -> dict:

@@ -1,6 +1,6 @@
 """
 Indeed Scraper — Apify Actor
-Entry point: my_actor/main.py
+Entry point: src/main.py
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from .helpers import (
     load_proxies_from_text,
     extract_job_ids_from_urls,
     build_indeed_search_urls,
+    indeed_login,
     showstartinginfo,
     status_logger,
     _flush_shared_batch,
@@ -37,8 +38,8 @@ async def main() -> None:
         max_jobs         = int(actor_input.get("max_jobs", 50))
         per_company_jobs = int(actor_input.get("per_company_jobs", 5))
         concurrency      = min(int(actor_input.get("concurrency", 5)), ScraperSettings.max_concurrency)
-        headless         = ScraperSettings.headless
-        # min_match_pct    = int(actor_input.get("min_match_percentage", 40))
+        headless         = actor_input.get("headless", True)
+        min_match_pct    = int(actor_input.get("min_match_percentage", 40))
 
         # ── Feature flags ─────────────────────────────────────────────────────
         scrape_company_details = bool(actor_input.get("scrape_company_details", False))
@@ -49,6 +50,7 @@ async def main() -> None:
         search_keywords_raw    = actor_input.get("search_keywords", "").strip()
         search_location        = actor_input.get("search_location", "").strip()
         search_country         = actor_input.get("search_country", "us").strip().lower()
+        max_results_per_search = int(actor_input.get("max_results_per_search", 0))
 
         # Parse keywords — one per line
         search_keywords = [k.strip() for k in search_keywords_raw.splitlines() if k.strip()]
@@ -62,10 +64,19 @@ async def main() -> None:
         apify_proxy_config = actor_input.get("proxy_config", {})
 
         proxies: list[str] = []
+        apify_playwright_proxy: dict | None = None
 
         if proxy_list_raw:
             proxies = load_proxies_from_text(proxy_list_raw)
             Actor.log.info(f"🌐 Using user-supplied proxy list ({len(proxies)} proxies)")
+        elif apify_proxy_config:
+            proxy_cfg_obj = await Actor.create_proxy_configuration(
+                actor_proxy_input=apify_proxy_config
+            )
+            if proxy_cfg_obj:
+                new_url = await proxy_cfg_obj.new_url()
+                apify_playwright_proxy = {"server": new_url}
+                Actor.log.info("🌐 Using Apify managed proxy")
         else:
             Actor.log.info("🌐 No proxy configured — using direct connection")
 
@@ -73,6 +84,8 @@ async def main() -> None:
 
         # ── Indeed account cookies ────────────────────────────────────────────
         account_cookies: list[dict] = actor_input.get("account_cookies", [])
+        indeed_email    = actor_input.get("indeed_email", "").strip()
+        indeed_password = actor_input.get("indeed_password", "").strip()
 
         # ── Processed job URLs → extract IDs to skip ─────────────────────────
         processed_urls_raw: list = actor_input.get("processed_job_urls", [])
@@ -106,6 +119,7 @@ async def main() -> None:
                 keywords=search_keywords,
                 location=search_location,
                 country=search_country,
+                max_results=max_results_per_search,
             )
             Actor.log.info(
                 f"🔧 No start_urls provided — built {len(url_list)} URL(s) "
@@ -120,7 +134,7 @@ async def main() -> None:
             ignore_related_raw=ignore_related,
             max_jobs=max_jobs,
             per_company_jobs=per_company_jobs,
-            # min_match_percentage=min_match_pct,
+            min_match_percentage=min_match_pct,
             concurrency=concurrency,
             processed_uids=processed_uids,
             account_cookies=account_cookies,
@@ -128,6 +142,7 @@ async def main() -> None:
             search_keywords=search_keywords,
             search_location=search_location,
             search_country=search_country,
+            max_results_per_search=max_results_per_search,
             scrape_company_details=scrape_company_details,
             save_unique_only=save_unique_only,
             follow_apply_redirect=follow_apply_redirect,
@@ -150,11 +165,29 @@ async def main() -> None:
                 ],
             )
 
-            # ── Auto-login when cookies given  ──────────────
-            if not account_cookies:
+            # ── Auto-login when credentials given but no cookies ──────────────
+            if not account_cookies and indeed_email and indeed_password:
+                Actor.log.info("🔐 Credentials provided — performing Indeed login...")
+                login_cookies = await indeed_login(
+                    browser=browser,
+                    config=config,
+                    playwright_proxy=apify_playwright_proxy,
+                    email=indeed_email,
+                    password=indeed_password,
+                )
+                if login_cookies:
+                    config.account_cookies = login_cookies
+                    Actor.log.info(
+                        f"✅ Login succeeded — {len(login_cookies)} cookies captured"
+                    )
+                else:
+                    Actor.log.warning(
+                        "⚠️ Login returned no cookies — proceeding without auth"
+                    )
+            elif not account_cookies and not indeed_email:
                 Actor.log.warning(
-                    "⚠️ No cookies — scraping without login. "
-                    "Indeed may show limited results, redirect to login page or trigger CAPTCHA."
+                    "⚠️ No cookies and no credentials — scraping without login. "
+                    "Indeed may show limited results or trigger CAPTCHA."
                 )
 
             await showstartinginfo(config)
