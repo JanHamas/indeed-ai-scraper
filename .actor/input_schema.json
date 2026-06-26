@@ -5,7 +5,7 @@
   "properties": {
 
     "search_keywords": {
-      "title": "🔑 Positions / Keywords for Search",
+      "title": "🔑 Positions / Keywords for Search one per line",
       "type": "string",
       "description": "Enter job titles or keywords to search on Indeed, one per line. The scraper builds search URLs automatically from these.\n\nExample:\nPython Developer\nBackend Engineer\nDjango Developer\n\nLeave blank if you are providing your own 'Indeed Search URLs' below.",
       "editor": "textarea",
@@ -45,11 +45,20 @@
     },
 
     "about_me": {
-      "title": "🎯 Target Job Titles for AI Matching (optional)",
+      "title": "🎯 Target Job Titles for AI Matching one per line (optional)",
       "type": "string",
       "description": "Enter the job titles you are targeting, one per line. The AI (JobBERT) scores each scraped job title against yours — only jobs meeting your minimum score are saved.\n\nLeave blank to disable AI filtering and collect all jobs.",
       "editor": "textarea",
       "prefill": ""
+    },
+
+    "min_match_percentage": {
+      "title": "🤖 Minimum AI Match Score (0–100)",
+      "type": "integer",
+      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
+      "default": 40,
+      "minimum": 0,
+      "maximum": 80
     },
 
     "max_jobs": {

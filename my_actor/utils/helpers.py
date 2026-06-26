@@ -7,9 +7,9 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import re
+import re, requests
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone 
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, parse_qs, urlencode, quote_plus
 from dotenv import load_dotenv
@@ -20,6 +20,10 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import ScraperSettings
 load_dotenv()
+from playwright.async_api import Browser, Page
+import json
+from pathlib import Path
+from . import fingerprint as fg_generator
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Indeed search URL builder
@@ -29,11 +33,10 @@ def build_indeed_search_urls(
     keywords:    list[str],
     location:    str,
     country:     str,
-    max_results: int,
 ) -> list[str]:
     """
     Build Indeed search URLs from keywords + location + country.
-    One URL per keyword line, with pagination limited to max_results.
+    One URL per keyword line.
     Country must be a key in ScraperSettings.indeed_country_domains.
     """
     base_domain = ScraperSettings.indeed_country_domains.get(
@@ -53,15 +56,46 @@ def build_indeed_search_urls(
         urls.append(base)
     Actor.log.info(
         f"🔧 Built {len(urls)} search URL(s) for {len(keywords)} keyword(s) "
-        f"| country={country} | location='{location}' | max_per_search={max_results}"
+        f"| country={country} | location='{location}'"
     )
     return urls
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Proxy file loader
+# User provded proxies loader
 # ─────────────────────────────────────────────────────────────────────────────
+from urllib.parse import urlparse  # add if not already imported
 
+def _parse_proxy_entry(raw: str) -> list[str] | None:
+    """Normalize any supported proxy format → [host, port, user, pwd] (user/pwd may be '')."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    if raw.startswith(("http://", "https://", "socks5://")):
+        try:
+            p = urlparse(raw)
+            if not p.hostname or not p.port:
+                return None
+            return [p.hostname, str(p.port), p.username or "", p.password or ""]
+        except Exception:
+            return None
+    parts = raw.split(":")
+    if len(parts) == 4:
+        return parts
+    if len(parts) == 2:
+        return [parts[0], parts[1], "", ""]
+    return None
+
+
+def is_proxy_alive(ip: str, port: str, user: str = "", pwd: str = "", timeout: int = 8) -> bool:
+    """Quick connectivity check — run off the event loop via asyncio.to_thread."""
+    try:
+        proxy_url = f"http://{user}:{pwd}@{ip}:{port}" if user else f"http://{ip}:{port}"
+        r = requests.get("https://api.ipify.org", proxies={"https": proxy_url}, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+    
 def load_proxies_from_text(raw_text: str) -> list[str]:
     """
     Parse a newline-separated proxy list.
@@ -85,28 +119,6 @@ def load_proxies_from_text(raw_text: str) -> list[str]:
             Actor.log.warning(f"⚠️ Unrecognised proxy format, skipping: {line}")
     Actor.log.info(f"📋 Loaded {len(proxies)} proxies from input")
     return proxies
-
-
-class ProxyRotator:
-    """Round-robin proxy picker. Falls back to None (direct) when empty."""
-    def __init__(self, proxies: list[str]):
-        self._proxies = proxies
-        self._index   = 0
-        self._lock    = asyncio.Lock()
-
-    async def next(self) -> dict | None:
-        if not self._proxies:
-            return None
-        async with self._lock:
-            proxy = self._proxies[self._index % len(self._proxies)]
-            self._index += 1
-        return {"server": proxy}
-
-    @property
-    def has_proxies(self) -> bool:
-        return bool(self._proxies)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Indeed job-ID extractor (for "already processed" URL list)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,12 +325,15 @@ class ScraperConfig:
     sheet_name:       str = "Indeed Jobs"
 
     # Browser
-    headless:     bool = True
-    proxy_config: dict = field(default_factory=dict)
+    headless:      bool           = True
+    proxies_path:  Optional[Path] = None
+    proxies_state: Optional[Path] = None
+    headless:      bool           = True
+    proxy_config:  dict           = field(default_factory=dict)
+    proxies:       List[str]      = field(default_factory=list)  
 
     # Auth
     account_cookies: List[dict]         = field(default_factory=list)
-    proxy_rotator:   "ProxyRotator | None" = field(default=None, repr=False)
 
     # Runtime state
     processed_uids: Set[str] = field(default_factory=set)
@@ -443,18 +458,19 @@ def load_scraper_config(
     concurrency:            int,
     processed_uids:         set[str],
     account_cookies:        list[dict],
-    proxy_rotator:          "ProxyRotator | None",
     search_keywords:        list[str],
     search_location:        str,
     search_country:         str,
-    max_results_per_search: int,
     scrape_company_details: bool,
     save_unique_only:       bool,
     follow_apply_redirect:  bool,
+    proxies:                list[str] | None = None,
+    proxies_path:           "Path | None" = None,
+    proxies_state:          "Path | None" = None,
+    max_results_per_search: int  = 0,
     google_sheet_url:       str  = "",
     sheet_name:             str  = "Indeed Jobs",
     headless:               bool = True,
-    proxy_config:           dict = None,
 ) -> ScraperConfig:
     ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
     ignore_related   = [kw.strip().lower() for kw in ignore_related_raw.splitlines() if kw.strip()]
@@ -478,13 +494,12 @@ def load_scraper_config(
         google_sheet_url=google_sheet_url,
         sheet_name=sheet_name,
         headless=headless,
-        proxy_config=proxy_config or {},
+        proxies=proxies or [],
+        proxies_path=proxies_path,
+        proxies_state=proxies_state,
         processed_uids=processed_uids,
         account_cookies=account_cookies,
-        proxy_rotator=proxy_rotator,
     )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -527,30 +542,156 @@ async def push_job_data(data: dict, config: ScraperConfig) -> None:
         Actor.log.warning(f"⚠️ Failed to push data: {e}")
 
 
+def get_proxy(proxies: list[str], config: ScraperConfig):
+    # First use in-memory proxies
+    if proxies:
+        return proxies.pop()
+
+    state_file = Path(config.proxies_state)
+
+    proxies_start_number = 0
+    if state_file.exists():
+        with open(state_file, "r") as f:
+            proxies_start_number = json.load(f).get("proxies_start_number", 0)
+
+    # Read proxy file
+    with open(config.proxies_path, "r") as f:
+        all_proxies = [line.strip() for line in f if line.strip()]
+
+    # No proxies anywhere
+    if not all_proxies:
+        log.warning("[HP] No proxies available.")
+        return []
+
+    index = proxies_start_number % len(all_proxies)
+    proxy = all_proxies[index].split(":")
+
+    # Save next index
+    new_start = (index + 1) % len(all_proxies)
+    with open(state_file, "w") as f:
+        json.dump({"proxies_start_number": new_start}, f)
+
+    return proxy
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Browser context creation
 # ─────────────────────────────────────────────────────────────────────────────
-async def create_context(browser, playwright_proxy: dict | None = None):
-    context_options: dict = {"no_viewport": True}
-    if playwright_proxy:
-        context_options["proxy"] = playwright_proxy
-    return await browser.new_context(**context_options)
+
+def get_timezone_from_ip(ip: str | None = None) -> str:
+    try:
+        url = f"http://ip-api.com/json/{ip}" if ip else "http://ip-api.com/json"
+        data = requests.get(url, timeout=5).json()
+        if data.get("status") == "success":
+            tz = data.get("timezone", "UTC")
+            print(f"[INFO] Timezone: {tz}")
+            return tz
+    except Exception as e:
+        print(f"[WARN] Could not fetch timezone: {e}")
+    return "UTC"
+
+def get_proxy_public_ip(ip: str, port: str, user: str, pwd: str) -> str:
+    try:
+        r = requests.get(
+            "https://api.ipify.org",
+            proxies={"https": f"http://{user}:{pwd}@{ip}:{port}"},
+            timeout=8,
+        )
+        addr = r.text.strip()
+        print(f"[INFO] Proxy public IP: {addr}")
+        return addr
+    except Exception as e:
+        print(f"[WARN] Could not get proxy public IP: {e}")
+    return ip
 
 
-async def create_context_with_cookies(
-    browser,
-    config: ScraperConfig,
-    playwright_proxy: dict | None = None,
-) -> Any:
-    proxy = playwright_proxy
-    if proxy is None and config.proxy_rotator and config.proxy_rotator.has_proxies:
-        proxy = await config.proxy_rotator.next()
-    context = await create_context(browser, proxy)
-    if config.account_cookies:
-        try:
-            await context.add_cookies(config.account_cookies)
-        except Exception as e:
-            Actor.log.warning(f"⚠️ Could not inject cookies: {e}")
+def _get_builtin_proxy(config: ScraperConfig) -> list[str]:
+    """File-based round-robin fallback — your original logic."""
+    if not config.proxies_path:
+        return []
+    proxies_file = Path(config.proxies_path)
+    if not proxies_file.exists():
+        Actor.log.warning("⚠️ Built-in proxies file not found — running without proxy.")
+        return []
+
+    state_file = Path(config.proxies_state) if config.proxies_state else None
+    proxies_start_number = 0
+    if state_file and state_file.exists():
+        with open(state_file, "r") as f:
+            proxies_start_number = json.load(f).get("proxies_start_number", 0)
+
+    with open(proxies_file, "r") as f:
+        all_lines = [line.strip() for line in f if line.strip()]
+    if not all_lines:
+        Actor.log.warning("⚠️ Built-in proxies file is empty — running without proxy.")
+        return []
+
+    index  = proxies_start_number % len(all_lines)
+    parsed = _parse_proxy_entry(all_lines[index]) or []
+
+    new_start = (index + 1) % len(all_lines)
+    if state_file:
+        with open(state_file, "w") as f:
+            json.dump({"proxies_start_number": new_start}, f)
+
+    return parsed
+
+
+async def get_proxy(proxies: list[str], config: ScraperConfig) -> list[str]:
+    """
+    Priority: user-supplied proxies (config.proxies) — one popped per context,
+    health-checked before use. Dead ones are discarded (not retried).
+    Once the user list is empty (or the popped one fails), fall back to
+    the built-in proxies.txt round-robin.
+    """
+    if proxies:
+        raw = proxies.pop()
+        parsed = _parse_proxy_entry(raw)
+        if parsed:
+            ip, port, user, pwd = parsed
+            alive = await asyncio.to_thread(is_proxy_alive, ip, port, user, pwd)
+            if alive:
+                Actor.log.info(f"✅ User proxy OK: {ip}:{port}")
+                return parsed
+            Actor.log.warning(f"⚠️ User proxy {ip}:{port} failed health check — using built-in instead")
+        else:
+            Actor.log.warning(f"⚠️ Could not parse proxy '{raw}' — using built-in instead")
+
+    return _get_builtin_proxy(config)
+async def create_context(browser: Browser, config: ScraperConfig):
+    proxy = await get_proxy(config.proxies, config)   # [ip, port, user, pwd] or []
+
+    proxy_ip = port = user = pwd = None
+    proxy_public_ip = None
+
+    if proxy and len(proxy) == 4:
+        proxy_ip, port, user, pwd = proxy
+        proxy_public_ip = await asyncio.to_thread(
+            fg_generator.get_proxy_public_ip, proxy_ip, port, user, pwd
+        )
+
+    timezone_id = await asyncio.to_thread(fg_generator.get_timezone_from_ip, proxy_ip)
+    fingerprint = fg_generator.generate()
+    script      = fg_generator.build_js_script(fingerprint)
+
+    context_options: dict = {
+        "timezone_id": timezone_id,
+        "no_viewport": True,
+        "user_agent":  fingerprint["user_agent"],
+    }
+
+    if proxy and len(proxy) == 4:
+        proxy_dict = {"server": f"http://{proxy_ip}:{port}"}
+        if user:
+            proxy_dict["username"] = user
+            proxy_dict["password"] = pwd
+        context_options["proxy"] = proxy_dict
+
+    context = await browser.new_context(**context_options)
+    await context.add_init_script(script)
+
+    if proxy and proxy_public_ip:
+        await context.add_init_script(fg_generator._webrtc_ip_spoof_script(proxy_public_ip))
+
     return context
 
 
@@ -632,26 +773,8 @@ def clear_queue(q: asyncio.Queue) -> None:
 
 
 async def _get_company(page: Page) -> str | None:
-    try:
-        await page.wait_for_selector('div[data-company-name="true"]', timeout=8000)
-    except Exception:
-        return None
-    selectors = [
-        'div[data-company-name="true"] a',
-        '[data-testid="inlineHeader-companyName"] span a',
-        'div[data-company-name="true"]',
-        '[data-testid="inlineHeader-companyName"]',
-    ]
-    for sel in selectors:
-        try:
-            el = await page.query_selector(sel)
-            if el:
-                text = (await el.inner_text()).strip().split("\n")[0].strip()
-                if text:
-                    return text
-        except Exception:
-            continue
-    return None
+    company = await page.locator('[data-testid="inlineHeader-companyName"] a').text_content()
+    return company.strip() if company else None
 
 
 async def _get_company_indeed_url(page: Page) -> str:
@@ -991,7 +1114,6 @@ async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info(f"🚫 Ignore related:      {config.ignore_related}")
     Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")
     Actor.log.info(f"🍪 Cookies:             {'provided' if config.account_cookies else 'not provided'}")
-    Actor.log.info(f"🌐 Proxy rotator:       {'active' if config.proxy_rotator and config.proxy_rotator.has_proxies else 'not configured'}")
     Actor.log.info(f"👻 Headless:            {config.headless}")
     Actor.log.info("=" * 80)
     Actor.log.info("🏃 Starting scraper execution…")

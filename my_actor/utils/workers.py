@@ -1,5 +1,5 @@
 """
-src/workers.py
+my_actor/workers.py
 listing_worker and processing_worker — Apify version.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from playwright.async_api import Browser
 from .config import ScraperSettings
 from .helpers import (
     ScraperConfig,
-    create_context_with_cookies,
+    create_context,
     open_jobs_search_page,
     simulate_human_behavior,
     get_total_jobs,
@@ -42,7 +42,7 @@ async def _maybe_rotate_context(
         count = config._context_requests.get(context_id, 0) + 1
         config._context_requests[context_id] = count
 
-    if count < ScraperSettings.context_rotate_limit:
+    if count < ScraperSettings.CONTEXT_ROTATE_LIMIT:
         return current_context, current_page
 
     Actor.log.info(
@@ -52,7 +52,7 @@ async def _maybe_rotate_context(
     async with config.context_lock:
         config._context_requests.pop(context_id, None)
 
-    new_ctx = await create_context_with_cookies(browser, config)
+    new_ctx = await create_context(browser, config)
     async with config.context_lock:
         config._context_requests[id(new_ctx)] = 0
 
@@ -75,7 +75,7 @@ async def listing_worker(
     batch_lock: asyncio.Lock,
     worker_id: int = 0,
 ) -> None:
-    context = await create_context_with_cookies(browser, config)
+    context = await create_context(browser, config)
     async with config.context_lock:
         config._context_requests[id(context)] = 0
     page = await context.new_page()
@@ -190,7 +190,7 @@ async def listing_worker(
                     batch_links.extend(links_to_add)
                     batch_uids.extend(uids_to_add)
 
-                    if len(batch_positions) >= ScraperSettings.get_percentages_batch_size:
+                    if len(batch_positions) >= config.min_match_percentage:
                         snap_positions = batch_positions.copy()
                         snap_links     = batch_links.copy()
                         snap_uids      = batch_uids.copy()
@@ -225,12 +225,12 @@ async def listing_worker(
             except asyncio.CancelledError:
                 break
 
-            link, pct = item
+            url, pct = item
             context, page = await _maybe_rotate_context(
                 context, page, config, worker_id, "processing", browser
             )
             try:
-                await process_filter_jobs(page=page, link=link, percentage=pct, config=config)
+                await process_filter_jobs(page=page, url=url, percentage=pct, config=config)
             except Exception as e:
                 Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
             finally:
@@ -255,7 +255,7 @@ async def processing_worker(
     filter_queue: asyncio.Queue,
     worker_id: int = 0,
 ) -> None:
-    context = await create_context_with_cookies(browser, config)
+    context = await create_context(browser, config)
     async with config.context_lock:
         config._context_requests[id(context)] = 0
     page = await context.new_page()
@@ -274,12 +274,12 @@ async def processing_worker(
             except asyncio.CancelledError:
                 break
 
-            link, pct = item
+            url, pct = item
             context, page = await _maybe_rotate_context(
                 context, page, config, worker_id, "processing", browser
             )
             try:
-                await process_filter_jobs(page=page, link=link, percentage=pct, config=config)
+                await process_filter_jobs(page=page, url=url, percentage=pct, config=config)
             except Exception as e:
                 Actor.log.error(f"❌ Processing worker {worker_id} error: {e}")
             finally:

@@ -3,20 +3,24 @@ src/config.py — Static settings for the Apify actor.
 All runtime values come from Actor input (see main.py).
 """
 from __future__ import annotations
-
+from pathlib import Path
 
 class ScraperSettings:
+    # Paths
+    BASE_DIR             = Path(__file__).resolve().parent.parent
+    PROXIES_PATH         = BASE_DIR / "proxies.txt"
+    PROXIES_STATE          = BASE_DIR / "proxy_state.json"
+    DB_SCREENSHOTS_PATH  = BASE_DIR / "db_screenshots"
+    
     # ── Concurrency cap ───────────────────────────────────────────────────────
-    max_concurrency = 10
+    MAX_CONCURRENCY = 10
+    HEADLESS = False
+    CONTEXT_ROTATE_LIMIT = 1000
+    GET_PERCENTAGES_BATCH_SIZE = 30
+    UID_FLUSH_SIZE = 30
+    SKIP_IGNORE_RELATED = True   # ← add
+    SKIP_EXPIRED        = True   # ← add
 
-    # ── Batch sizes ───────────────────────────────────────────────────────────
-    get_percentages_batch_size = 30   # jobs scored per AI call
-    UID_FLUSH_SIZE             = 30   # UIDs buffered before saving to KV store
-
-    # ── Browser context rotation ──────────────────────────────────────────────
-    context_rotate_limit = 1000       # requests per context before recreation
-
-    headless = True
 
     # ── Google Sheets (public URL mode) ──────────────────────────────────────
     gsheet_scopes = ["https://www.googleapis.com/auth/spreadsheets"]

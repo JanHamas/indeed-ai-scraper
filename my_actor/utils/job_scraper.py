@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import re
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -25,6 +24,9 @@ from .helpers import (
     scrape_company_details as fetch_company_details,
     check_remote_status,
     push_job_data,
+    _get_company,              # ← add
+    _get_company_indeed_url,   # ← add
+    _extract_posted_date,      # ← add
 )
 
 
@@ -41,7 +43,6 @@ async def process_filter_jobs(
     data: dict = {field: "" for field in ScraperSettings.extraction_fields}
 
     # ── Static / known-at-call-time fields ───────────────────────────────────
-    data[""]                = False
     data["url"]                     = url
     data["urlInput"]                = url
     data["jobMatch"]                = percentage
@@ -71,7 +72,7 @@ async def process_filter_jobs(
             content = await page.locator("body").inner_text()
             if any(kw in content for kw in config.ignore_related):
                 Actor.log.info(f"⏭ Skipped (ignore_related): {url}")
-                if ScraperSettings.skip_ignore_related:
+                if ScraperSettings.SKIP_IGNORE_RELATED:
                     return False
     except Exception as e:
         Actor.log.error(f"❌ ignore_related check failed: {e}")
@@ -112,9 +113,10 @@ async def process_filter_jobs(
         # ── Salary & Job Type ─────────────────────────────────────────────────
         # extract_salary_job_types returns (salary, jt0, jt1, jt2, jt3)
         # We collapse all job type tokens into a single comma-separated string
-        salary, jt0, jt1, jt2, jt3 = await extract_salary_job_types(page)
+        salary, job_types = await extract_salary_job_types(page)
         data["salary"]  = salary
-        data["jobType"] = ", ".join(t for t in [jt0, jt1, jt2, jt3] if t)
+        data["jobType"] = ", ".join(job_types)
+
 
         # ── Location ──────────────────────────────────────────────────────────
         try:
@@ -187,7 +189,7 @@ async def process_filter_jobs(
         expired_loc      = page.locator(":text-is('This job has expired on Indeed')").first
         is_expired       = await expired_loc.is_visible()
         data["isExpired"] = True if is_expired else False
-        if is_expired and ScraperSettings.skip_expired:
+        if is_expired and ScraperSettings.SKIP_EXPIRED:
             return False
 
         # ── Rating & Reviews ──────────────────────────────────────────────────

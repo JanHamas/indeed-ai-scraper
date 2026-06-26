@@ -4,15 +4,13 @@ Entry point: my_actor/main.py
 """
 from __future__ import annotations
 
-import asyncio
+import asyncio, json
 from apify import Actor
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
-from .config import ScraperSettings
-from .helpers import (
-    ScraperConfig,
-    ProxyRotator,
+from .utils.config import ScraperSettings
+from .utils.helpers import (
     load_scraper_config,
     load_proxies_from_text,
     extract_job_ids_from_urls,
@@ -21,8 +19,8 @@ from .helpers import (
     status_logger,
     _flush_shared_batch,
 )
-from .workers import listing_worker, processing_worker
-from .gsheet import upload_to_google_sheet
+from .utils.workers import listing_worker, processing_worker
+from .utils.gsheet import upload_to_google_sheet
 
 
 async def main() -> None:
@@ -36,9 +34,11 @@ async def main() -> None:
         ignore_related   = actor_input.get("ignore_related", "")
         max_jobs         = int(actor_input.get("max_jobs", 50))
         per_company_jobs = int(actor_input.get("per_company_jobs", 5))
-        concurrency      = min(int(actor_input.get("concurrency", 5)), ScraperSettings.max_concurrency)
-        headless         = ScraperSettings.headless
-        # min_match_pct    = int(actor_input.get("min_match_percentage", 40))
+        concurrency      = min(int(actor_input.get("concurrency", 5)), ScraperSettings.MAX_CONCURRENCY)
+        min_match_pct    = int(actor_input.get("min_match_percentage", 40))
+        proxies_path = ScraperSettings.PROXIES_PATH
+        proxies_state = ScraperSettings.PROXIES_STATE
+        headless         = ScraperSettings.HEADLESS
 
         # ── Feature flags ─────────────────────────────────────────────────────
         scrape_company_details = bool(actor_input.get("scrape_company_details", False))
@@ -59,17 +59,13 @@ async def main() -> None:
 
         # ── Proxy setup ───────────────────────────────────────────────────────
         proxy_list_raw     = actor_input.get("proxy_list", "").strip()
-        apify_proxy_config = actor_input.get("proxy_config", {})
-
         proxies: list[str] = []
 
         if proxy_list_raw:
             proxies = load_proxies_from_text(proxy_list_raw)
             Actor.log.info(f"🌐 Using user-supplied proxy list ({len(proxies)} proxies)")
         else:
-            Actor.log.info("🌐 No proxy configured — using direct connection")
-
-        proxy_rotator = ProxyRotator(proxies) if proxies else None
+            Actor.log.info("🌐 No proxy configured by user — using built in.")
 
         # ── Indeed account cookies ────────────────────────────────────────────
         account_cookies: list[dict] = actor_input.get("account_cookies", [])
@@ -120,11 +116,10 @@ async def main() -> None:
             ignore_related_raw=ignore_related,
             max_jobs=max_jobs,
             per_company_jobs=per_company_jobs,
-            # min_match_percentage=min_match_pct,
+            min_match_percentage=min_match_pct,
             concurrency=concurrency,
             processed_uids=processed_uids,
             account_cookies=account_cookies,
-            proxy_rotator=proxy_rotator,
             search_keywords=search_keywords,
             search_location=search_location,
             search_country=search_country,
@@ -134,7 +129,9 @@ async def main() -> None:
             google_sheet_url=google_sheet_url,
             sheet_name=sheet_name,
             headless=headless,
-            proxy_config=apify_proxy_config,
+            proxies=proxies,
+            proxies_path=proxies_path,
+            proxies_state=proxies_state
         )
 
         # ── Launch browser ────────────────────────────────────────────────────
@@ -209,7 +206,10 @@ async def main() -> None:
                 for i in range(concurrency)
             ]
 
-            await asyncio.gather(*listing_tasks, *processing_tasks, return_exceptions=True)
+            results = await asyncio.gather(*listing_tasks, *processing_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    Actor.log.error(f"❌ Task {i} crashed: {result!r}")
 
             await _flush_shared_batch(
                 config, batch_positions, batch_links, batch_uids, batch_lock, filter_queue

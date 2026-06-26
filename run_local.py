@@ -15,7 +15,7 @@ from pathlib import Path
 # Simulate Apify local storage layout
 os.environ.setdefault("APIFY_LOCAL_STORAGE_DIR", str(Path(__file__).parent / "storage"))
 
-from my_actor.src.main import main
+from my_actor.main import main
 
 if __name__ == "__main__":
     # Write a sample INPUT.json if it doesn't exist
