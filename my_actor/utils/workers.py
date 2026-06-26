@@ -73,6 +73,9 @@ async def listing_worker(
     batch_links: list,
     batch_uids: list,
     batch_lock: asyncio.Lock,
+    active_listers: dict,
+    active_listers_lock: asyncio.Lock,
+    listing_done_event: asyncio.Event,
     worker_id: int = 0,
 ) -> None:
     context = await create_context(browser, config)
@@ -210,12 +213,21 @@ async def listing_worker(
     except Exception as e:
         Actor.log.error(f"❌ Worker {worker_id} listing phase failed: {e}")
 
+    # ── Mark this listing worker's phase 1 as complete ───────────────────────
+    async with active_listers_lock:
+        active_listers["count"] -= 1
+        if active_listers["count"] <= 0:
+            await _flush_shared_batch(
+                config, batch_positions, batch_links, batch_uids, batch_lock, filter_queue
+            )
+            listing_done_event.set()
+
     # ── Phase 2: drain filter_queue ───────────────────────────────────────────
     try:
         while True:
-            if filter_queue.empty() and url_queue.empty():
-                break
             if filter_queue.empty():
+                if listing_done_event.is_set():
+                    break
                 await asyncio.sleep(0.1)
                 continue
             try:
@@ -253,6 +265,7 @@ async def processing_worker(
     config: ScraperConfig,
     url_queue: asyncio.Queue,
     filter_queue: asyncio.Queue,
+    listing_done_event: asyncio.Event,
     worker_id: int = 0,
 ) -> None:
     context = await create_context(browser, config)
@@ -262,9 +275,9 @@ async def processing_worker(
 
     try:
         while True:
-            if filter_queue.empty() and url_queue.empty():
-                break
             if filter_queue.empty():
+                if listing_done_event.is_set():
+                    break
                 await asyncio.sleep(0.1)
                 continue
             try:

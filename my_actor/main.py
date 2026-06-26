@@ -168,6 +168,10 @@ async def main() -> None:
             for url in config.url_queue:
                 await url_queue.put(url)
 
+            active_listers = {"count": concurrency}
+            active_listers_lock = asyncio.Lock()
+            listing_done_event = asyncio.Event()
+
             stop_event = asyncio.Event()
 
             Actor.log.info(
@@ -187,6 +191,9 @@ async def main() -> None:
                         batch_links=batch_links,
                         batch_uids=batch_uids,
                         batch_lock=batch_lock,
+                        active_listers=active_listers,
+                        active_listers_lock=active_listers_lock,
+                        listing_done_event=listing_done_event,
                         worker_id=i,
                     )
                 )
@@ -200,6 +207,7 @@ async def main() -> None:
                         config=config,
                         url_queue=url_queue,
                         filter_queue=filter_queue,
+                        listing_done_event=listing_done_event,
                         worker_id=concurrency + i,
                     )
                 )

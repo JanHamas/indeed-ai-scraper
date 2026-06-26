@@ -8,9 +8,9 @@ from pathlib import Path
 class ScraperSettings:
     # Paths
     BASE_DIR             = Path(__file__).resolve().parent.parent
-    PROXIES_PATH         = BASE_DIR / "proxies.txt"
-    PROXIES_STATE          = BASE_DIR / "proxy_state.json"
-    DB_SCREENSHOTS_PATH  = BASE_DIR / "db_screenshots"
+    PROXIES_PATH         = BASE_DIR / "utils" / "proxies.txt"
+    PROXIES_STATE          = BASE_DIR / "utils" / "proxy_state.json"
+    DB_SCREENSHOTS_PATH  = BASE_DIR / "utils" / "db_screenshots"
     
     # ── Concurrency cap ───────────────────────────────────────────────────────
     MAX_CONCURRENCY = 10
