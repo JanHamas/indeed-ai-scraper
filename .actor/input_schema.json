@@ -5,7 +5,7 @@
   "properties": {
 
     "search_keywords": {
-      "title": "🔑 Positions / Keywords for Search one per line",
+      "title": "🔑 Positions / Keywords for Search (one per line)",
       "type": "string",
       "description": "Enter job titles or keywords to search on Indeed, one per line. The scraper builds search URLs automatically from these.\n\nExample:\nPython Developer\nBackend Engineer\nDjango Developer\n\nLeave blank if you are providing your own 'Indeed Search URLs' below.",
       "editor": "textarea",
@@ -45,7 +45,7 @@
     },
 
     "about_me": {
-      "title": "🎯 Target Job Titles for AI Matching one per line (optional)",
+      "title": "🎯 Target Job Titles for AI Matching (one per line, optional)",
       "type": "string",
       "description": "Enter the job titles you are targeting, one per line. The AI (JobBERT) scores each scraped job title against yours — only jobs meeting your minimum score are saved.\n\nLeave blank to disable AI filtering and collect all jobs.",
       "editor": "textarea",
@@ -55,10 +55,10 @@
     "min_match_percentage": {
       "title": "🤖 Minimum AI Match Score (0–100)",
       "type": "integer",
-      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
+      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this threshold are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
       "default": 40,
       "minimum": 0,
-      "maximum": 80
+      "maximum": 100
     },
 
     "max_jobs": {
@@ -93,6 +93,20 @@
       "default": true
     },
 
+    "skip_expired_jobs": {
+      "title": "⏰ Skip Expired Jobs",
+      "type": "boolean",
+      "description": "When enabled, jobs marked as expired on Indeed are silently skipped and not saved to your results.\n\nDisable if you want to collect expired listings (e.g. for market research).",
+      "default": true
+    },
+
+    "skip_ignore_related_jobs": {
+      "title": "🚫 Skip Jobs Matching 'Keywords to Skip'",
+      "type": "boolean",
+      "description": "When enabled, any job whose description contains a word from your 'Keywords to Skip' list is silently skipped and not saved.\n\nDisable if you want those jobs saved but flagged instead (the ignore_related field will be set to 'True' in the output).",
+      "default": true
+    },
+
     "follow_apply_redirect": {
       "title": "🔗 Follow Redirects for Apply Link",
       "type": "boolean",
@@ -111,7 +125,7 @@
     "ignore_related": {
       "title": "🚫 Keywords to Skip (optional)",
       "type": "string",
-      "description": "If a job description contains any of these words, that job is skipped. One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
+      "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "textarea",
       "prefill": ""
     },
@@ -127,7 +141,7 @@
     "account_cookies": {
       "title": "🍪 Indeed Account Cookies (optional — recommended)",
       "type": "array",
-      "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install 'https://chromewebstore.google.com/detail/nmckokihipjgplolmcmjakknndddifde?utm_source=item-share-cb' extension.\n3. Export cookies as JSON and paste here.",
+      "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install the 'Cookie-Editor' extension: https://chromewebstore.google.com/detail/nmckokihipjgplolmcmjakknndddifde\n3. Click Export → Export as JSON and paste here.",
       "editor": "json",
       "prefill": []
     },
@@ -158,8 +172,8 @@
     "concurrency": {
       "title": "⚡ Concurrency (advanced)",
       "type": "integer",
-      "description": "Number of parallel browser workers per phase. Higher = faster but more memory and proxy usage. Max: 10.",
-      "default": 5,
+      "description": "Number of parallel browser workers per phase (listing + processing). Total browser contexts = concurrency × 2.\n\nMemory guide:\n  1 GB RAM  → use 2\n  2 GB RAM  → use 4\n  4 GB RAM  → use 8\n\nHigher = faster but uses more memory. OOM crashes if set too high for your memory allocation.",
+      "default": 10,
       "minimum": 1,
       "maximum": 10
     }
