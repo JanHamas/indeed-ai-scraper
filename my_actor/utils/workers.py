@@ -123,11 +123,9 @@ async def listing_worker(
                             total_jobs=total_jobs,
                             base_url=job_search_url,
                             url_queue=url_queue,
-                            max_results_per_search=config.max_results_per_search,
                         )
                         Actor.log.info(
                             f"🌐 {total_jobs}+ jobs found"
-                            + (f" (capped at {config.max_results_per_search})" if config.max_results_per_search else "")
                             + f" — {job_search_url}"
                         )
                 except Exception as e:

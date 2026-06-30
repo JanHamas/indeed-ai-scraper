@@ -72,7 +72,7 @@ async def process_filter_jobs(
             content = await page.locator("body").inner_text()
             if any(kw in content for kw in config.ignore_related):
                 Actor.log.info(f"⏭ Skipped (ignore_related): {url}")
-                if ScraperSettings.SKIP_IGNORE_RELATED:
+                if config.skip_ignore_related_jobs:
                     return False
     except Exception as e:
         Actor.log.error(f"❌ ignore_related check failed: {e}")
@@ -83,6 +83,11 @@ async def process_filter_jobs(
         page_title = await page.title()
         if "not found" in page_title.lower():
             Actor.log.info(f"⏭ Job removed/expired: {url}")
+            return False
+        
+        # Check if Indeed redirected to the sign-in page (cookies expired)
+        if "sign in | indeed accounts" in page_title.lower():
+            Actor.log.info(f"Indeed triggered the sign-in page. Update cookies: {page.url}")
             return False
 
         # ── Company ───────────────────────────────────────────────────────────
@@ -189,7 +194,7 @@ async def process_filter_jobs(
         expired_loc      = page.locator(":text-is('This job has expired on Indeed')").first
         is_expired       = await expired_loc.is_visible()
         data["isExpired"] = True if is_expired else False
-        if is_expired and ScraperSettings.SKIP_EXPIRED:
+        if is_expired and config.skip_expired_jobs:
             return False
 
         # ── Rating & Reviews ──────────────────────────────────────────────────

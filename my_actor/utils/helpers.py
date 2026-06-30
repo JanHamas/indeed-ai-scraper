@@ -313,12 +313,13 @@ class ScraperConfig:
     search_keywords:     List[str] = field(default_factory=list)
     search_location:     str       = ""
     search_country:      str       = "us"
-    max_results_per_search: int    = 0   # 0 = unlimited
 
     # Feature flags
-    scrape_company_details: bool = False  # fetch company profile page
-    save_unique_only:       bool = True   # deduplicate by (position, company)
-    follow_apply_redirect:  bool = False  # resolve external apply link
+    scrape_company_details:   bool = False  # fetch company profile page
+    save_unique_only:         bool = True   # deduplicate by (position, company)
+    follow_apply_redirect:    bool = False  # resolve external apply link
+    skip_expired_jobs:        bool = False
+    skip_ignore_related_jobs: bool = False
 
     # Google Sheets
     google_sheet_url: str = ""
@@ -464,10 +465,12 @@ def load_scraper_config(
     scrape_company_details: bool,
     save_unique_only:       bool,
     follow_apply_redirect:  bool,
+    skip_expired_jobs:      bool,
+    skip_ignore_related_jobs:  bool,
+    
     proxies:                list[str] | None = None,
     proxies_path:           "Path | None" = None,
     proxies_state:          "Path | None" = None,
-    max_results_per_search: int  = 0,
     google_sheet_url:       str  = "",
     sheet_name:             str  = "Indeed Jobs",
     headless:               bool = True,
@@ -487,10 +490,11 @@ def load_scraper_config(
         search_keywords=search_keywords,
         search_location=search_location,
         search_country=search_country,
-        max_results_per_search=max_results_per_search,
         scrape_company_details=scrape_company_details,
         save_unique_only=save_unique_only,
         follow_apply_redirect=follow_apply_redirect,
+        skip_expired_jobs=skip_expired_jobs,
+        skip_ignore_related_jobs=skip_ignore_related_jobs,
         google_sheet_url=google_sheet_url,
         sheet_name=sheet_name,
         headless=headless,
@@ -718,6 +722,11 @@ async def open_jobs_search_page(page: Page, job_search_url: str, url_queue: asyn
     for attempt in range(3):
         try:
             await page.goto(job_search_url, wait_until="load")
+            # Check if Indeed redirected to the sign-in page (cookies expired)
+            page_title = await page.title()
+            if "sign in | indeed accounts" in page_title.lower():
+                Actor.log.info(f"Indeed triggered the sign-in page. Update cookies: {page.url}")
+                return False
             return
         except PlaywrightTimeoutError:
             if attempt < 2:
@@ -742,15 +751,11 @@ async def build_and_enqueue_jobs_search_urls(
     total_jobs: int,
     base_url:   str,
     url_queue:  asyncio.Queue,
-    max_results_per_search: int = 0,
 ) -> None:
     """
-    Enqueue pagination URLs. If max_results_per_search > 0, only enqueue
-    enough pages to reach that cap (each page has 10 results).
+    Enqueue pagination URLs.
     """
     cap = total_jobs
-    if max_results_per_search > 0:
-        cap = min(total_jobs, max_results_per_search)
     for start in range(10, cap, 10):
         await url_queue.put(f"{base_url}&start={start}")
 
@@ -1099,8 +1104,6 @@ async def showstartinginfo(config: ScraperConfig) -> None:
     if config.search_keywords:
         Actor.log.info(f"🔑 Keywords:            {config.search_keywords}")
         Actor.log.info(f"📍 Location:            '{config.search_location}' | country={config.search_country}")
-        if config.max_results_per_search:
-            Actor.log.info(f"📄 Max per search:      {config.max_results_per_search}")
     Actor.log.info(f"⚡ Concurrency:         {config.concurrency}")
     Actor.log.info(f"🏢 Per company:         {config.per_company_jobs}")
     if config.ai_matching_enabled:
@@ -1110,6 +1113,8 @@ async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info(f"🏭 Company details:     {'ON' if config.scrape_company_details else 'OFF'}")
     Actor.log.info(f"🔁 Unique jobs only:    {'ON' if config.save_unique_only else 'OFF'}")
     Actor.log.info(f"🔗 Follow apply link:   {'ON' if config.follow_apply_redirect else 'OFF'}")
+    Actor.log.info(f"🔗 Skip expired jobs:   {'ON' if config.skip_expired_jobs else 'OFF'}")
+    Actor.log.info(f"🔗 Skip ignore related jobs:{'ON' if config.skip_ignore_related_jobs else 'OFF'}")
     Actor.log.info(f"🚫 Ignore companies:    {len(config.ignore_companies)}")
     Actor.log.info(f"🚫 Ignore related:      {config.ignore_related}")
     Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")

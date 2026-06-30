@@ -4,7 +4,7 @@ Entry point: my_actor/main.py
 """
 from __future__ import annotations
 
-import asyncio, json
+import asyncio
 from apify import Actor
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -44,6 +44,8 @@ async def main() -> None:
         scrape_company_details = bool(actor_input.get("scrape_company_details", False))
         save_unique_only       = bool(actor_input.get("save_unique_only", True))
         follow_apply_redirect  = bool(actor_input.get("follow_apply_redirect", False))
+        skip_expired_jobs  = bool(actor_input.get("skip_expired_jobs", False))
+        skip_ignore_related_jobs  = bool(actor_input.get("skip_ignore_related_jobs", False))
 
         # ── Search builder fields (used when start_urls is empty) ─────────────
         search_keywords_raw    = actor_input.get("search_keywords", "").strip()
@@ -114,6 +116,8 @@ async def main() -> None:
             about_me=about_me,
             ignore_companies_raw=ignore_companies,
             ignore_related_raw=ignore_related,
+            skip_expired_jobs=skip_expired_jobs,
+            skip_ignore_related_jobs=skip_ignore_related_jobs,
             max_jobs=max_jobs,
             per_company_jobs=per_company_jobs,
             min_match_percentage=min_match_pct,

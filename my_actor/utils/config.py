@@ -18,9 +18,6 @@ class ScraperSettings:
     CONTEXT_ROTATE_LIMIT = 1000
     GET_PERCENTAGES_BATCH_SIZE = 30
     UID_FLUSH_SIZE = 30
-    SKIP_IGNORE_RELATED = True   # ← add
-    SKIP_EXPIRED        = True   # ← add
-
 
     # ── Google Sheets (public URL mode) ──────────────────────────────────────
     gsheet_scopes = ["https://www.googleapis.com/auth/spreadsheets"]
