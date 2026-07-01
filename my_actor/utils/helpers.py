@@ -661,6 +661,7 @@ async def get_proxy(proxies: list[str], config: ScraperConfig) -> list[str]:
             Actor.log.warning(f"⚠️ Could not parse proxy '{raw}' — using built-in instead")
 
     return _get_builtin_proxy(config)
+
 async def create_context(browser: Browser, config: ScraperConfig):
     proxy = await get_proxy(config.proxies, config)   # [ip, port, user, pwd] or []
 
@@ -691,6 +692,11 @@ async def create_context(browser: Browser, config: ScraperConfig):
         context_options["proxy"] = proxy_dict
 
     context = await browser.new_context(**context_options)
+
+    # inject cookies
+    account_cookies = config.account_cookies
+    if account_cookies:
+        await context.add_cookies(account_cookies)
     await context.add_init_script(script)
 
     if proxy and proxy_public_ip:
