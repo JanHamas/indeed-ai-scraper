@@ -30,6 +30,7 @@ from .helpers import (
     clear_queue
 )
 from queue import Queue
+from cloudflare import CloudflareBypasser
 
 
 async def process_filter_jobs(
@@ -66,6 +67,13 @@ async def process_filter_jobs(
     else:
         Actor.log.error(f"❌ All retries failed: {url}")
         return False
+    
+    # ── Cloudflare bypass ─────────────────────────────────────────
+    try:
+        await CloudflareBypasser(page, config.log_dispatcher).detect_and_bypass()
+    except Exception as e:
+        await config.log_dispatcher.emit("error", f"❌ Cloudflare bypass error: {e}")
+        return
 
     await simulate_human_behavior(page)
 

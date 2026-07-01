@@ -24,6 +24,7 @@ from .helpers import (
     update_processed_uids,
 )
 from .job_scraper import process_filter_jobs
+from cloudflare import CloudflareBypasser
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +111,15 @@ async def listing_worker(
                 )
 
                 await open_jobs_search_page(page, job_search_url, url_queue)
+                
+                # ── Cloudflare bypass ─────────────────────────────────────────
+                try:
+                    await CloudflareBypasser(page, config.log_dispatcher).detect_and_bypass()
+                except Exception as e:
+                    await config.log_dispatcher.emit("error", f"❌ Cloudflare bypass error: {e}")
+                    url_queue.task_done()
+                    continue
+
                 await simulate_human_behavior(page)
 
                 # Enqueue pagination URLs on first page only
