@@ -725,7 +725,11 @@ async def open_jobs_search_page(page: Page, job_search_url: str, url_queue: asyn
             # Check if Indeed redirected to the sign-in page (cookies expired)
             page_title = await page.title()
             if "sign in | indeed accounts" in page_title.lower():
-                Actor.log.info(f"Indeed triggered the sign-in page. Update cookies: {page.url}")
+                Actor.log.info(
+                    f"Indeed redirected to the sign-in page (cookies may have expired). "
+                    f"Update cookies: {page.url}"
+                )
+                clear_queue(url_queue)
                 return False
             return
         except PlaywrightTimeoutError:

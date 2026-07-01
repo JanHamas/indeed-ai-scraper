@@ -60,7 +60,6 @@ async def _maybe_rotate_context(
     Actor.log.info(f"✅ Worker {worker_id} [{phase}] — fresh context ready")
     return new_ctx, new_page
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # listing_worker
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,7 +239,7 @@ async def listing_worker(
                 context, page, config, worker_id, "processing", browser
             )
             try:
-                await process_filter_jobs(page=page, url=url, percentage=pct, config=config)
+                await process_filter_jobs(page=page, url=url, percentage=pct, config=config, filter_queue=filter_queue)
             except Exception as e:
                 Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
             finally:
@@ -290,7 +289,7 @@ async def processing_worker(
                 context, page, config, worker_id, "processing", browser
             )
             try:
-                await process_filter_jobs(page=page, url=url, percentage=pct, config=config)
+                await process_filter_jobs(page=page, url=url, percentage=pct, config=config, filter_queue=filter_queue)
             except Exception as e:
                 Actor.log.error(f"❌ Processing worker {worker_id} error: {e}")
             finally:

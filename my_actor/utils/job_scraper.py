@@ -27,7 +27,9 @@ from .helpers import (
     _get_company,              # ← add
     _get_company_indeed_url,   # ← add
     _extract_posted_date,      # ← add
+    clear_queue
 )
+from queue import Queue
 
 
 async def process_filter_jobs(
@@ -35,6 +37,7 @@ async def process_filter_jobs(
     url: str,
     percentage: float,
     config: ScraperConfig,
+    filter_queue: Queue,
 ) -> bool:
     """
     Scrape full job details from an Indeed job URL.
@@ -87,7 +90,11 @@ async def process_filter_jobs(
         
         # Check if Indeed redirected to the sign-in page (cookies expired)
         if "sign in | indeed accounts" in page_title.lower():
-            Actor.log.info(f"Indeed triggered the sign-in page. Update cookies: {page.url}")
+            Actor.log.info(
+                f"Indeed redirected to the sign-in page (cookies may have expired). "
+                f"Update cookies: {page.url}"
+            )
+            clear_queue(filter_queue)
             return False
 
         # ── Company ───────────────────────────────────────────────────────────
@@ -106,14 +113,7 @@ async def process_filter_jobs(
             Actor.log.warning(f"⚠️ No position title found: {url}")
             return False
         data["positionName"]         = position_text.strip()
-        data["searchInput/position"] = position_text.strip()  # actual scraped title
-
-        # ── Unique fingerprint check ──────────────────────────────────────────
-        if config.is_duplicate_fingerprint(data["positionName"], data["company"]):
-            Actor.log.info(
-                f"⏭ Duplicate skipped: '{data['positionName']}' @ '{data['company']}'"
-            )
-            return False
+        data["searchInput/position"] = position_text.strip()
 
         # ── Salary & Job Type ─────────────────────────────────────────────────
         # extract_salary_job_types returns (salary, jt0, jt1, jt2, jt3)
