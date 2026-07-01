@@ -14,7 +14,7 @@ class ScraperSettings:
     
     # ── Concurrency cap ───────────────────────────────────────────────────────
     MAX_CONCURRENCY = 10
-    HEADLESS = True
+    HEADLESS = False
     CONTEXT_ROTATE_LIMIT = 1000
     GET_PERCENTAGES_BATCH_SIZE = 30
     UID_FLUSH_SIZE = 30
