@@ -31,7 +31,7 @@ if __name__ == "__main__":
             "max_jobs": 10,
             "per_company_jobs": 2,
             "min_match_percentage": 30,
-            "concurrency": 1,
+            "concurrency": 2,
             "ignore_companies": "",
             "ignore_related": "",
             "google_sheet_url": "",

@@ -33,11 +33,12 @@ def build_indeed_search_urls(
     keywords:    list[str],
     location:    str,
     country:     str,
+    date_filter: str = "any",   # ← new param
 ) -> list[str]:
     """
     Build Indeed search URLs from keywords + location + country.
-    One URL per keyword line.
-    Country must be a key in ScraperSettings.indeed_country_domains.
+    date_filter values: "any" | "1" | "3" | "7" | "14"
+    Indeed's fromage param = max age in days (from age).
     """
     base_domain = ScraperSettings.indeed_country_domains.get(
         country.lower().strip(), ScraperSettings.indeed_country_domains["us"]
@@ -50,16 +51,15 @@ def build_indeed_search_urls(
         params = {"q": kw}
         if location and location.strip():
             params["l"] = location.strip()
-        # max_results caps pagination — enqueue only up to this many results
-        # We pass it through metadata on the URL itself via a custom fragment
+        if date_filter and date_filter != "any":
+            params["fromage"] = date_filter   # e.g. fromage=1 → last 24h
         base = f"{base_domain}/jobs?{urlencode(params)}"
         urls.append(base)
     Actor.log.info(
         f"🔧 Built {len(urls)} search URL(s) for {len(keywords)} keyword(s) "
-        f"| country={country} | location='{location}'"
+        f"| country={country} | location='{location}' | date_filter={date_filter}"
     )
     return urls
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # User provded proxies loader

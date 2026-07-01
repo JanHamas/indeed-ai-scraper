@@ -51,6 +51,7 @@ async def main() -> None:
         search_keywords_raw    = actor_input.get("search_keywords", "").strip()
         search_location        = actor_input.get("search_location", "").strip()
         search_country         = actor_input.get("search_country", "us").strip().lower()
+        date_filter = actor_input.get("date_filter", "any").strip()
 
         # Parse keywords — one per line
         search_keywords = [k.strip() for k in search_keywords_raw.splitlines() if k.strip()]
@@ -104,6 +105,7 @@ async def main() -> None:
                 keywords=search_keywords,
                 location=search_location,
                 country=search_country,
+                date_filter=date_filter,
             )
             Actor.log.info(
                 f"🔧 No start_urls provided — built {len(url_list)} URL(s) "
