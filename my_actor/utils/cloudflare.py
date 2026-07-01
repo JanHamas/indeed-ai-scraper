@@ -1,45 +1,55 @@
-import asyncio, json, os
+"""
+my_actor/utils/cloudflare.py
+Cloudflare Turnstile bypasser — Apify Actor version.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+
+from apify import Actor
+from playwright.async_api import Page
 from twocaptcha import TwoCaptcha
-from dotenv import load_dotenv
-from asgiref.sync import async_to_sync
-
-
-load_dotenv()
 
 
 class CloudflareBypasser:
-    def __init__(self, page, log):
-        self.page = page
-        self.api_key = os.getenv("2CAPTCHA_API_KEY")
-        self.captured_params = None
-        self.console_listener = None
-        self.log = log
-     
-    async def detect_and_bypass(self):
-        # is_visible() with timeout=0 is instant — no waiting
+    def __init__(self, page: Page):
+        self.page     = page
+        self.api_key  = os.getenv("2CAPTCHA_API_KEY")
+        self.captured_params: dict | None = None
+        self._console_listener = None
+
+    # ── Public entry point ────────────────────────────────────────────────────
+    async def detect_and_bypass(self) -> bool:
+        """
+        Returns True  → challenge was present and successfully bypassed.
+        Returns False → no challenge detected (fast path) OR bypass failed.
+        """
         if not await self.page.locator("text='Additional Verification Required'").is_visible(timeout=0):
-            return False  # fast path — no challenge, return immediately
-        
-        # some time captcha auto solve
-        await self.log.emit("info", "[+] Attempting Cloudflare Bypass")
-        # await self.page.reload()
-        # await self.page.wait_for_timeout(5000)
-        # if not await self.page.locator("text='Additional Verification Required'").is_visible(timeout=0):
-        #     return False  
-        
-        
-        params = await self.get_captcha_params()
-        if params:
-            token = await self.solve_captcha_async(params)
-            if token:
-                await self.send_token(token)
-                await asyncio.sleep(5)
-                await self.log.emit("info", "[+] Cloudflare Successfully Bypassed")
-                return True
-        await self.log.emit("critical", "[-] Cloudflare Bypass Failed")
-        return False
-    
-    async def get_captcha_params(self):
+            return False  # fast path — no challenge present
+
+        Actor.log.info("[CF] Cloudflare challenge detected — attempting bypass")
+
+        params = await self._intercept_captcha_params()
+        if not params:
+            Actor.log.error("[CF] Could not intercept Turnstile params — bypass failed")
+            return False
+
+        token = await self._solve_async(params)
+        if not token:
+            Actor.log.error("[CF] 2Captcha returned no token — bypass failed")
+            return False
+
+        await self._submit_token(token)
+        await asyncio.sleep(5)
+        Actor.log.info("[CF] Cloudflare bypass succeeded ✅")
+        return True
+
+    # ── Step 1: intercept Turnstile render() call via console ─────────────────
+    async def _intercept_captcha_params(self) -> dict | None:
+        self.captured_params = None
+
         intercept_script = """
         console.clear = () => console.log("Console was cleared");
         let resolved = false;
@@ -49,11 +59,11 @@ class CloudflareBypasser:
                 resolved = true;
                 window.turnstile.render = (a, b) => {
                     const params = {
-                        sitekey: b.sitekey,
-                        pageurl: window.location.href,
-                        data: b.cData,
-                        pagedata: b.chlPageData,
-                        action: b.action,
+                        sitekey:   b.sitekey,
+                        pageurl:   window.location.href,
+                        data:      b.cData,
+                        pagedata:  b.chlPageData,
+                        action:    b.action,
                         userAgent: navigator.userAgent
                     };
                     console.log('intercepted-params:' + JSON.stringify(params));
@@ -63,51 +73,57 @@ class CloudflareBypasser:
         }, 50);
         """
 
-        def console_handler(msg):
+        def _on_console(msg):
             if "intercepted-params:" in msg.text:
                 try:
-                    json_str = msg.text.split('intercepted-params:', 1)[1].strip()
+                    json_str = msg.text.split("intercepted-params:", 1)[1].strip()
                     self.captured_params = json.loads(json_str)
                 except Exception as e:
-                    print(f"[-] JSON Parse Error: {e}")
+                    Actor.log.warning(f"[CF] JSON parse error on console message: {e}")
 
-        self.console_listener = lambda msg: console_handler(msg)
-        self.page.on("console", self.console_listener)
+        self._console_listener = _on_console
+        self.page.on("console", self._console_listener)
 
-        retries = 5
-        while retries > 0 and not self.captured_params:
+        for attempt in range(1, 6):
+            if self.captured_params:
+                break
+            Actor.log.info(f"[CF] Waiting for Turnstile params — attempt {attempt}/5")
             await self.page.reload()
             await self.page.evaluate(intercept_script)
-            await asyncio.sleep(3)                                    
-            retries -= 1
+            await asyncio.sleep(3)
 
-        self.page.remove_listener("console", self.console_listener)
+        self.page.remove_listener("console", self._console_listener)
+        self._console_listener = None
         return self.captured_params
 
-    async def solve_captcha_async(self, params):
+    # ── Step 2: solve via 2Captcha (off-thread so event loop stays free) ─────
+    async def _solve_async(self, params: dict) -> str | None:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.solve_captcha_sync, params)
-    
-    def solve_captcha_sync(self, params):
-        solver = TwoCaptcha(self.api_key)
+        return await loop.run_in_executor(None, self._solve_sync, params)
+
+    def _solve_sync(self, params: dict) -> str | None:
+        if not self.api_key:
+            Actor.log.error("[CF] 2CAPTCHA_API_KEY not set — cannot solve captcha")
+            return None
         try:
+            solver = TwoCaptcha(self.api_key)
             result = solver.turnstile(
-                sitekey=params["sitekey"],
-                url=params["pageurl"],
-                action=params["action"],
-                data=params["data"],
-                pagedata=params["pagedata"],
-                useragent=params["userAgent"]
+                sitekey  = params["sitekey"],
+                url      = params["pageurl"],
+                action   = params.get("action"),
+                data     = params.get("data"),
+                pagedata = params.get("pagedata"),
+                useragent= params.get("userAgent"),
             )
-            return result["code"]
+            return result.get("code")
         except Exception as e:
-            async_to_sync(self.log.emit)("critical",f"[-] 2Captcha Error: {str(e).split('—')[-1].strip()}")
+            Actor.log.error(f"[CF] 2Captcha error: {str(e).split('—')[-1].strip()}")
             return None
 
-    async def send_token(self, token):
+    # ── Step 3: inject token back into the page ───────────────────────────────
+    async def _submit_token(self, token: str) -> None:
         await self.page.evaluate(f"""() => {{
             if (typeof window.cfCallback === 'function') {{
                 window.cfCallback("{token}");
             }}
         }}""")
-    
