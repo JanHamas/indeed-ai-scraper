@@ -21,7 +21,6 @@ from .helpers import (
     extract_rating_and_reviews,
     extract_external_apply_link,
     resolve_redirect,
-    scrape_company_details as fetch_company_details,
     check_remote_status,
     push_job_data,
     _get_company,              # ← add
@@ -30,7 +29,7 @@ from .helpers import (
     clear_queue
 )
 from queue import Queue
-from cloudflare import CloudflareBypasser
+from .cloudflare import CloudflareBypasser
 
 
 async def process_filter_jobs(
@@ -69,7 +68,7 @@ async def process_filter_jobs(
     
     # ── Cloudflare bypass ─────────────────────────────────────────
     try:
-        await CloudflareBypasser(page, config.log_dispatcher).detect_and_bypass()
+        await CloudflareBypasser(page).detect_and_bypass()
     except Exception as e:
         Actor.log.info(f"❌ Cloudflare bypass error: {e}")
         return

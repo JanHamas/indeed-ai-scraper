@@ -24,7 +24,7 @@ from .helpers import (
     update_processed_uids,
 )
 from .job_scraper import process_filter_jobs
-from cloudflare import CloudflareBypasser
+from .cloudflare import CloudflareBypasser
 
 
 # ─────────────────────────────────────────────────────────────────────────────
