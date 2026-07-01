@@ -114,9 +114,9 @@ async def listing_worker(
                 
                 # ── Cloudflare bypass ─────────────────────────────────────────
                 try:
-                    await CloudflareBypasser(page, config.log_dispatcher).detect_and_bypass()
+                    await CloudflareBypasser(page).detect_and_bypass()
                 except Exception as e:
-                    await config.log_dispatcher.emit("error", f"❌ Cloudflare bypass error: {e}")
+                    Actor.log.info(f"❌ Cloudflare bypass error: {e}")
                     url_queue.task_done()
                     continue
 

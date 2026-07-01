@@ -49,3 +49,4 @@ websockets==16.0
 yarl==1.24.2
 torch
 sentence_transformers
+2captcha-python==1.5.1

@@ -805,48 +805,45 @@ async def _get_company_indeed_url(page: Page) -> str:
     return ""
 
 
+import re
 
-async def _extract_posted_date(page: Page) -> tuple[str, str]:
+async def _extract_posted_date(
+    page: Page,
+    date_on_indeed: int | None = None,
+) -> tuple[str, str]:
     """
-    Returns (raw_text, iso_date_string).
-    raw_text  → e.g. "Posted 3 days ago"
-    iso_date  → approximate ISO-8601 date calculated from "X days ago"
+    Returns:
+        postedAt            -> "12 days ago"
+        postingDateParsed   -> "2026-06-18T15:58:53.616Z"
     """
-    raw = ""
-    iso = ""
+    posted_at = ""
+    posting_date_parsed = ""
+
     try:
-        # Indeed uses a <span> with data-testid or class for posting age
-        selectors = [
-            '[data-testid="myJobsStateDate"]',
-            'span.date',
-            'span[class*="date"]',
-            'span:has-text("Posted")',
-            'span:has-text("days ago")',
-            'span:has-text("Just posted")',
-            'span:has-text("Today")',
-        ]
-        for sel in selectors:
-            loc = page.locator(sel).first
-            if await loc.count() > 0:
-                raw = (await loc.inner_text()).strip()
-                break
+        content = await page.content()
 
-        if raw:
-            now = datetime.now(timezone.utc)
-            m   = re.search(r'(\d+)\s+day', raw, re.IGNORECASE)
-            if m:
-                from datetime import timedelta
-                delta = timedelta(days=int(m.group(1)))
-                iso   = (now - delta).date().isoformat()
-            elif re.search(r'today|just posted|hour|minute', raw, re.IGNORECASE):
-                iso = now.date().isoformat()
-            elif re.search(r'30\+', raw):
-                from datetime import timedelta
-                iso = (now - timedelta(days=30)).date().isoformat()
+        # Fall back to pulling the epoch-ms timestamp from the embedded JSON
+        if not date_on_indeed:
+            match = re.search(r'"datePublished":(\d+)', content)
+            if match:
+                date_on_indeed = int(match.group(1))
 
-    except Exception:
-        pass
-    return raw, iso
+        if date_on_indeed:
+            posting_date_parsed = (
+                datetime.fromtimestamp(date_on_indeed / 1000, tz=timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+
+        # Relative-age text, e.g. hiringInsightsModel.age in the embedded JSON
+        age_match = re.search(r'"age":"([^"]+)"', content)
+        if age_match:
+            posted_at = age_match.group(1)
+
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Failed to extract posted date: {e}")
+
+    return posted_at, posting_date_parsed
 
 async def extract_salary_job_types(page: Page):
     container = page.locator("#salaryInfoAndJobType")

@@ -46,8 +46,7 @@ class ScraperSettings:
 
     # ── Fields written to Apify dataset (Actor.push_data) ────────────────────
     extraction_fields = [
-        "id","positionName","company","location","isRemote","jobType","salary","rating","reviewsCount","jobMatch","description","ignoreRelated","descriptionHTML","benefits","applyType","externalApplyLink","url","companyIndeedUrl","isExpired","postedAt","postingDateParsed","scrapedAt","searchInput","searchInput/country","searchInput/location","searchInput/position","urlInput"
-        "companyLogo",
+        "id","positionName","company","location","isRemote","jobType","salary","rating","reviewsCount","jobMatch","description","ignoreRelated","descriptionHTML","benefits","applyType","externalApplyLink","url","companyIndeedUrl","isExpired","postedAt","postingDateParsed","scrapedAt","searchInput","searchInput/country","searchInput/location","searchInput/position"
         ]
 
 

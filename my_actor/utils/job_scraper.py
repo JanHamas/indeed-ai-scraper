@@ -48,7 +48,6 @@ async def process_filter_jobs(
 
     # ── Static / known-at-call-time fields ───────────────────────────────────
     data["url"]                     = url
-    data["urlInput"]                = url
     data["jobMatch"]                = percentage
     data["scrapedAt"]               = datetime.now(timezone.utc).isoformat()
     data["searchInput/country"]     = config.search_country
@@ -72,7 +71,7 @@ async def process_filter_jobs(
     try:
         await CloudflareBypasser(page, config.log_dispatcher).detect_and_bypass()
     except Exception as e:
-        await config.log_dispatcher.emit("error", f"❌ Cloudflare bypass error: {e}")
+        Actor.log.info(f"❌ Cloudflare bypass error: {e}")
         return
 
     await simulate_human_behavior(page)
@@ -195,8 +194,8 @@ async def process_filter_jobs(
 
         # ── Posting date ──────────────────────────────────────────────────────
         posted_at, posting_date_parsed = await _extract_posted_date(page)
-        data["postedAt"]           = posted_at
-        data["postingDateParsed"]  = posting_date_parsed
+        data["postedAt"] = posted_at
+        data["postingDateParsed"] = posting_date_parsed
 
         # ── Expiry ────────────────────────────────────────────────────────────
         expired_loc      = page.locator(":text-is('This job has expired on Indeed')").first
@@ -215,10 +214,11 @@ async def process_filter_jobs(
 
         # ── Company details (optional — visits /cmp/<slug>) ───────────────────
         if config.scrape_company_details:
-            company_info = await fetch_company_details(page, data["company"])
-            data["companySize"]        = company_info.get("company_size", "")
-            data["companyIndustry"]    = company_info.get("company_industry", "")
-            data["companyDescription"] = company_info.get("company_description", "")
+            # company_info = await fetch_company_details(page, data["company"])
+            # data["companySize"]        = company_info.get("company_size", "")
+            # data["companyIndustry"]    = company_info.get("company_industry", "")
+            # data["companyDescription"] = company_info.get("company_description", "")
+            pass
 
         # ── searchInput composite ─────────────────────────────────────────────
         data["searchInput"] = {
