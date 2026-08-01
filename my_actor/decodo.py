@@ -1,53 +1,57 @@
 """
-my_actor/brightdata.py
-BrightData Web Unlocker HTTP client with multi-account rotation.
+my_actor/decodo.py
+Decodo Web Scraping API client with multi-account rotation.
+
+Unlike BrightData's Web Unlocker (a proxy you route requests through),
+Decodo's Scraper API is a plain HTTPS endpoint: you POST the target URL
+(plus options) to https://scraper-api.decodo.com/v2/scrape with HTTP Basic
+auth, and it returns JSON containing the rendered page in
+`results[0]["content"]`.
 
 One aiohttp.ClientSession is shared across all workers.
-On failure or rate-limit (429/402/403), the next account is tried automatically.
-When all accounts are exhausted, a warning is printed and an exception is raised.
+On failure or rate-limit (429/402/403 — from Decodo itself, or reflected
+in the per-result status_code), the next account is tried automatically.
+When all accounts are exhausted, a warning is printed and an exception is
+raised.
 """
 from __future__ import annotations
 
 import asyncio
-import ssl
+import json
 from typing import Optional
 
 import aiohttp
 from apify import Actor
 
-from .config import BRIGHTDATA_ACCOUNTS, ScraperSettings
-
-# Shared SSL context — disables cert verification (required for BrightData proxy)
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+from .config import DECODO_ACCOUNTS, API_URL, ScraperSettings
 
 
 class AccountRotator:
     """
-    Round-robin BrightData account rotator with per-account failure tracking.
+    Round-robin Decodo account rotator with per-account failure tracking.
 
     All workers share one instance. On each fetch():
       1. Pick the next non-failed account.
-      2. Make the request through that account's proxy.
-      3. On 429/402/403 → mark account failed, try the next.
+      2. POST to Decodo's Scraper API using that account's Authorization header.
+      3. On 429/402/403 (request-level or result-level) → mark account failed, try next.
       4. On success → clear failure flag for that account.
       5. If all accounts fail → reset failure set, log a warning, raise.
     """
 
     def __init__(self) -> None:
-        self._accounts = list(BRIGHTDATA_ACCOUNTS)
+        self._accounts = list(DECODO_ACCOUNTS)
         self._idx = 0
         self._lock = asyncio.Lock()
         self._failed: set[int] = set()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _proxy_url(self, account: dict) -> str:
-        return f"https://{account['host']}:{account['port']}"
-
-    def _proxy_auth(self, account: dict) -> aiohttp.BasicAuth:
-        return aiohttp.BasicAuth(account["username"], account["password"])
+    def _request_headers(self, account: dict) -> dict:
+        return {
+            "Accept":        "application/json",
+            "Content-Type":  "application/json",
+            "Authorization": account["authorization"],
+        }
 
     async def _pick(self) -> int:
         """Return the index of the next available account (round-robin)."""
@@ -68,14 +72,24 @@ class AccountRotator:
         url: str,
         session: aiohttp.ClientSession,
         headers: Optional[dict] = None,
+        headless: str = "html",
     ) -> str:
         """
-        Fetch `url` through BrightData Web Unlocker, rotating accounts on failure.
+        Fetch `url` through Decodo's Scraper API, rotating accounts on failure.
+
+        `headers`, if given, are forwarded to the *target* site as
+        Decodo's `headers` scrape option (NOT used for Decodo's own auth).
+        `headless="html"` renders JS and returns the final HTML — matches
+        what the old proxy-based fetch effectively gave the parsers.
 
         Tries every available account once before raising.
         """
         tried: set[int] = set()
-        last_exc: Exception = RuntimeError("All BrightData accounts failed")
+        last_exc: Exception = RuntimeError("All Decodo accounts failed")
+
+        payload: dict = {"url": url, "headless": headless}
+        if headers:
+            payload["headers"] = headers
 
         while len(tried) < len(self._accounts):
             idx = await self._pick()
@@ -84,16 +98,14 @@ class AccountRotator:
             tried.add(idx)
 
             account = self._accounts[idx]
-            label = f"Account {idx + 1} ({account['username'][:35]}…)"
+            label = f"Account {idx + 1} ({account['name']})"
 
             try:
-                async with session.get(
-                    url,
-                    proxy=self._proxy_url(account),
-                    proxy_auth=self._proxy_auth(account),
-                    headers=headers or {},
+                async with session.post(
+                    API_URL,
+                    json=payload,
+                    headers=self._request_headers(account),
                     timeout=aiohttp.ClientTimeout(total=ScraperSettings.REQUEST_TIMEOUT),
-                    ssl=_SSL_CTX,
                 ) as resp:
 
                     if resp.status == 429:
@@ -108,23 +120,49 @@ class AccountRotator:
                     if resp.status in (402, 403):
                         Actor.log.warning(
                             f"🛑 {label} returned {resp.status} — "
-                            "plan may be FINISHED. Please renew your BrightData "
-                            f"subscription for: {account['username']}"
+                            "plan may be FINISHED. Please renew your Decodo "
+                            f"subscription for: {account['name']}"
                         )
                         async with self._lock:
                             self._failed.add(idx)
                         continue
 
                     resp.raise_for_status()
+                    body = await resp.json()
+
+                    results = body.get("results") or []
+                    if not results:
+                        raise RuntimeError(f"Decodo returned no results for {url}: {body}")
+
+                    result = results[0]
+                    target_status = result.get("status_code")
+
+                    if target_status == 429:
+                        Actor.log.warning(
+                            f"⚠️ {label} target site rate-limited (429) — trying next account."
+                        )
+                        async with self._lock:
+                            self._failed.add(idx)
+                        continue
+
+                    if target_status in (402, 403):
+                        Actor.log.warning(
+                            f"🛑 {label} target returned {target_status} — trying next account."
+                        )
+                        async with self._lock:
+                            self._failed.add(idx)
+                        continue
+
+                    content = result.get("content", "")
                     async with self._lock:
                         self._failed.discard(idx)
-                    return await resp.text()
+                    return content
 
             except aiohttp.ClientResponseError as e:
                 Actor.log.warning(f"⚠️ {label} HTTP {e.status} on {url}: {e.message}")
                 last_exc = e
-            except aiohttp.ClientProxyConnectionError as e:
-                Actor.log.warning(f"⚠️ {label} proxy connection error: {e}")
+            except (json.JSONDecodeError, aiohttp.ContentTypeError) as e:
+                Actor.log.warning(f"⚠️ {label} bad JSON response on {url}: {e}")
                 last_exc = e
             except asyncio.TimeoutError:
                 Actor.log.warning(f"⚠️ {label} timed out on {url}")

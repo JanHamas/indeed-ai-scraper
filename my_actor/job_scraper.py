@@ -1,6 +1,7 @@
 """
 my_actor/job_scraper.py
-Scrapes full job details from a single Indeed job page via BrightData HTTP.
+Scrapes full job details from a single Indeed job page via Decodo's
+Web Scraping API.
 Field names match ScraperSettings.extraction_fields exactly.
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ from .helpers import (
     is_login_wall_html,
     clear_queue,
 )
-from .brightdata import rotator
+from .decodo import rotator
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
 
 

@@ -1,11 +1,10 @@
 """
-Indeed Scraper — Apify Actor (BrightData Web Unlocker edition)
+Indeed Scraper — Apify Actor (Decodo Web Scraping API edition)
 Entry point: my_actor/main.py
 """
 from __future__ import annotations
 
 import asyncio
-import ssl
 
 import aiohttp
 from apify import Actor
@@ -26,10 +25,9 @@ from .gsheet import upload_to_google_sheet
 
 PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
-# Shared SSL context (disables cert verification for BrightData proxy)
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+# NOTE: Decodo's Scraper API (https://scraper-api.decodo.com) is a normal
+# HTTPS endpoint — unlike BrightData's proxy, there's no need to disable
+# certificate verification, so the shared connector uses default SSL.
 
 
 async def main() -> None:
@@ -43,7 +41,7 @@ async def main() -> None:
         ignore_related   = actor_input.get("ignore_related", "")
         max_jobs         = int(actor_input.get("max_jobs", 50))
         per_company_jobs = int(actor_input.get("per_company_jobs", 5))
-        concurrency      = min(int(actor_input.get("concurrency", 25)), ScraperSettings.MAX_CONCURRENCY)
+        concurrency      = min(int(actor_input.get("concurrency", 10)), ScraperSettings.MAX_CONCURRENCY)
         min_match_pct    = int(actor_input.get("min_match_percentage", 0))
 
         # ── Feature flags ─────────────────────────────────────────────────────
@@ -159,12 +157,11 @@ async def main() -> None:
 
         Actor.log.info(
             f"🚀 Launching {concurrency} listing + {concurrency} processing workers "
-            f"via BrightData Web Unlocker"
+            f"via Decodo Web Scraping API"
         )
 
         # ── Shared aiohttp session (one for all workers) ──────────────────────
         connector = aiohttp.TCPConnector(
-            ssl=_SSL_CTX,
             limit=concurrency * 4,          # total connection pool size
             limit_per_host=concurrency * 2, # per-host limit
         )

@@ -1,9 +1,9 @@
 """
 my_actor/workers.py
-Listing and processing workers — BrightData HTTP version.
+Listing and processing workers — Decodo HTTP version.
 
 No browser contexts. Workers make HTTP requests through the shared
-AccountRotator and parse HTML with BeautifulSoup.
+AccountRotator (Decodo Scraper API) and parse HTML with BeautifulSoup.
 
 Worker split (same ratio as original):
   - 16% primary_listing_worker  → lists then drains filter_queue
@@ -30,7 +30,7 @@ from .helpers import (
     _base_url_of,
     purge_queue_beyond,
 )
-from .brightdata import rotator
+from .decodo import rotator
 from .job_scraper import process_filter_jobs
 from .config import ScraperSettings
 

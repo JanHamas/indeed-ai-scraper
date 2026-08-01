@@ -1,42 +1,41 @@
 """
 my_actor/config.py
-BrightData Web Unlocker accounts and scraper limits.
+Decodo Web Scraping API accounts and scraper limits.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   HOW TO ADD MORE ACCOUNTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Copy the block below and append it to BRIGHTDATA_ACCOUNTS.
+Copy the block below and append it to DECODO_ACCOUNTS.
 The scraper auto-detects all accounts and rotates through them.
 When one fails or hits its rate limit, the next one is tried automatically.
+
+`authorization` is the full "Basic <base64(user:pass)>" string shown on
+your Decodo dashboard (Scraping APIs → Web Scraping API → Authentication).
 """
 
-# ── BrightData Web Unlocker accounts ──────────────────────────────────────────
-# Add more dicts here when you buy additional subscriptions.
-# ─────────────────────────────────────────────────────────────────────────────
-BRIGHTDATA_ACCOUNTS = [
-    # Account 1 — hamasjan5544@gmail.com
-    {
-        "username": "brd-customer-hl_dbeb3119-zone-web_unlocker1",
-        "password": "rbw9khccsoqe",
-        "host":     "brd.superproxy.io",
-        "port":     44445,
-    },
-    # # Account 2 — hamasjan82@gmail.com github
-    # {
-    #     "username": "brd-customer-hl_4cf2bac1-zone-web_unlocker1",
-    #     "password": "tk5gg3kjgyhg",
-    #     "host":     "brd.superproxy.io",
-    #     "port":     44445,
-    # },
-    # ← ADD MORE ACCOUNTS HERE:
-    # {
-    #     "username": "brd-customer-hl_XXXXXXXX-zone-web_unlocker1",
-    #     "password": "YOUR_PASSWORD",
-    #     "host":     "brd.superproxy.io",
-    #     "port":     44445,
-    # },
-]
+API_URL = "https://scraper-api.decodo.com/v2/scrape"
 
+# ── Decodo Web Scraping API accounts ──────────────────────────────────────────
+# Add more dicts here when you buy additional subscriptions/tokens.
+# ─────────────────────────────────────────────────────────────────────────────
+DECODO_ACCOUNTS = [
+    {
+        "name": "account_1",
+        "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm",
+        "rate_limit": 10,
+    },
+    {
+        "name": "account_2",
+        "authorization": "Basic VTAwMDA0Nzc4Mzc6UFdfMWU3ZDYxMjJlYzdmNTM2OThmYWJmOGZkODhmYjg0ODM0",
+        "rate_limit": 10,
+    },
+    # ← ADD MORE ACCOUNTS HERE:
+    {
+        "name": "account_3", "hamasjan5544"
+        "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm"
+        "rate_limit": 10,
+    },
+]
 
 class ScraperSettings:
     MAX_CONCURRENCY     = 50
