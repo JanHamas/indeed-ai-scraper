@@ -14,7 +14,7 @@
       "title": "Search Keywords (one per line)",
       "type": "string",
       "description": "Job titles / keywords to search for. One per line. Used only when start_urls is empty.",
-      "editor": "textarea",
+      "editor": "textfield",
       "default": ""
     },
     "search_location": {
@@ -24,18 +24,7 @@
       "editor": "textfield",
       "default": ""
     },
-    "search_country": {
-      "title": "Country code",
-      "type": "string",
-      "description": "us, uk, ca, au, de, fr, in, sg, nz, ie, za",
-      "default": "us"
-    },
-    "date_filter": {
-      "title": "Date filter",
-      "type": "string",
-      "description": "any | 1 | 3 | 7 | 14 (days)",
-      "default": "any"
-    },
+    
     "account_cookies": {
       "title": "Indeed Account Cookies (optional)",
       "type": "array",
@@ -47,7 +36,7 @@
       "title": "About Me / Target Role",
       "type": "string",
       "description": "Describe the roles you're targeting. AI uses this to score job-title match.",
-      "editor": "textarea",
+      "editor": "textfield",
       "default": ""
     },
     "min_match_percentage": {
@@ -100,13 +89,13 @@
     "ignore_companies": {
       "title": "Ignore companies (one per line)",
       "type": "string",
-      "editor": "textarea",
+      "editor": "textfield",
       "default": ""
     },
     "ignore_related": {
       "title": "Ignore-related keywords (one per line)",
       "type": "string",
-      "editor": "textarea",
+      "editor": "textfield",
       "default": ""
     },
     "processed_job_urls": {
