@@ -1,145 +1,183 @@
 {
-  "title": "Indeed AI Scraper Input",
+  "title": "Indeed AI Job Scraper",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
+
+    "search_keywords": {
+      "title": "🔑 Positions / Keywords for Search (one per line)",
+      "type": "string",
+      "description": "Enter job titles or keywords to search on Indeed, one per line. The scraper builds search URLs automatically from these.\n\nExample:\nPython Developer\nBackend Engineer\nDjango Developer\n\nLeave blank if you are providing your own 'Indeed Search URLs' below.",
+      "editor": "textarea",
+      "prefill": ""
+    },
+
+    "search_country": {
+      "title": "🌍 Country for Search",
+      "type": "string",
+      "description": "The country to search on Indeed. Determines which Indeed domain is used (e.g. indeed.com, uk.indeed.com).",
+      "editor": "select",
+      "enum": ["us", "uk", "ca", "au", "in", "de", "fr", "sg", "pk", "nl", "es", "it", "br", "mx", "nz", "jp", "ae", "sa"],
+      "enumTitles": [
+        "🇺🇸 United States", "🇬🇧 United Kingdom", "🇨🇦 Canada", "🇦🇺 Australia",
+        "🇮🇳 India", "🇩🇪 Germany", "🇫🇷 France", "🇸🇬 Singapore",
+        "🇵🇰 Pakistan", "🇳🇱 Netherlands", "🇪🇸 Spain", "🇮🇹 Italy",
+        "🇧🇷 Brazil", "🇲🇽 Mexico", "🇳🇿 New Zealand", "🇯🇵 Japan",
+        "🇦🇪 UAE", "🇸🇦 Saudi Arabia"
+      ],
+      "default": "us"
+    },
+
+    "search_location": {
+      "title": "📍 Location for Search (optional)",
+      "type": "string",
+      "description": "City, state, or region to search within. Leave blank to search nationwide or for remote jobs.\n\nExamples:  San Francisco, CA  |  New York  |  Remote  |  London",
+      "editor": "textfield",
+      "prefill": ""
+    },
+
+    "date_filter": {
+      "title": "📅 Date Posted Filter",
+      "type": "string",
+      "description": "Only return jobs posted within this time window. Applied to keyword-based searches only — has no effect if you supply your own 'Indeed Search URLs'.",
+      "editor": "select",
+      "enum": ["any", "1", "3", "7", "14"],
+      "enumTitles": [
+        "📅 All dates (default)",
+        "🕐 Last 24 hours",
+        "📆 Last 3 days",
+        "🗓️ Last 7 days",
+        "📅 Last 14 days"
+      ],
+      "default": "any"
+    },
+
     "start_urls": {
-      "title": "Start URLs",
+      "title": "🔗 Indeed Search URLs (optional — overrides keyword search)",
       "type": "array",
-      "description": "Paste Indeed search URLs directly. If provided, search keywords are ignored.",
+      "description": "Advanced option: paste your own Indeed search URLs here. These take priority over the keyword/location/country fields above.\n\nWhen to use this: if you want to use Indeed's filters (date posted, salary, job type) that aren't available through the keyword builder — just set up your search on Indeed with those filters and copy the URL.\n\nLeave blank to use the keyword search fields above.",
       "editor": "stringList",
       "prefill": []
     },
-    "search_keywords": {
-      "title": "Search Keywords",
-      "type": "string",
-      "description": "Job titles or keywords to search for. One keyword per line.",
-      "editor": "textarea",
-      "default": ""
-    },
-    "search_location": {
-      "title": "Location",
-      "type": "string",
-      "description": "Search location (e.g. New York, NY or Remote).",
-      "editor": "textfield",
-      "default": ""
-    },
-    "search_country": {
-      "title": "Country Code",
-      "type": "string",
-      "description": "Indeed country code (us, uk, ca, au, de, fr, in, sg, nz, ie, za).",
-      "editor": "textfield",
-      "default": "us"
-    },
-    "date_filter": {
-      "title": "Date Filter",
-      "type": "string",
-      "description": "Only return jobs from the last N days. Allowed values: any, 1, 3, 7, 14.",
-      "editor": "textfield",
-      "default": "any"
-    },
-    "account_cookies": {
-      "title": "Indeed Account Cookies",
-      "type": "array",
-      "description": "Indeed session cookies as a JSON array. Optional.",
-      "editor": "json",
-      "prefill": []
-    },
+
     "about_me": {
-      "title": "About Me / Target Role",
+      "title": "🎯 Target Job Titles for AI Matching (one per line, optional)",
       "type": "string",
-      "description": "Describe your target role so AI can score job relevance.",
+      "description": "Enter the job titles you are targeting, one per line. The AI (JobBERT) scores each scraped job title against yours — only jobs meeting your minimum score are saved.\n\nLeave blank to disable AI filtering and collect all jobs.",
       "editor": "textarea",
-      "default": ""
+      "prefill": ""
     },
+
     "min_match_percentage": {
-      "title": "Minimum AI Match %",
+      "title": "🤖 Minimum AI Match Score (0–100)",
       "type": "integer",
-      "description": "Jobs below this percentage will be skipped. Use 0 to collect all jobs.",
-      "default": 0
+      "description": "Only used when 'Target Job Titles' is filled in. Jobs scoring below this threshold are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 70
     },
+
     "max_jobs": {
-      "title": "Maximum Jobs",
+      "title": "📦 Total Jobs to Collect",
       "type": "integer",
-      "description": "Maximum number of jobs to collect.",
-      "default": 2000
+      "description": "The scraper stops once it has saved this many jobs total (across all keywords/URLs). Recommended: 50–500.",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 500
     },
+
     "per_company_jobs": {
-      "title": "Maximum Jobs Per Company",
+      "title": "🏢 Max Jobs per Company",
       "type": "integer",
-      "description": "Maximum number of jobs to collect from a single company.",
-      "default": 5
+      "description": "Limits how many jobs from the same company are saved. Keeps results diverse.",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 50
     },
-    "concurrency": {
-      "title": "Concurrency",
-      "type": "integer",
-      "description": "Number of parallel workers. Recommended 25. Maximum 50.",
-      "default": 10
-    },
+
     "scrape_company_details": {
-      "title": "Scrape Company Details",
+      "title": "🏭 Scrape Company Details",
       "type": "boolean",
-      "description": "Collect additional information from company profile pages.",
+      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so it will be slower and use more proxy bandwidth.",
       "default": false
     },
+
     "save_unique_only": {
-      "title": "Save Unique Jobs Only",
+      "title": "✅ Save Only Unique Job Listings",
       "type": "boolean",
-      "description": "Prevent duplicate jobs from being saved.",
+      "description": "When enabled, if the same job title at the same company appears more than once (e.g. across different search URLs), only the first occurrence is saved. Recommended to keep on.",
       "default": true
     },
+
     "skip_expired_jobs": {
-      "title": "Skip Expired Jobs",
+      "title": "⏰ Skip Expired Jobs",
       "type": "boolean",
-      "description": "Ignore expired or unavailable job postings.",
+      "description": "When enabled, jobs marked as expired on Indeed are silently skipped and not saved to your results.\n\nDisable if you want to collect expired listings (e.g. for market research).",
       "default": true
     },
+
     "skip_ignore_related_jobs": {
-      "title": "Skip Ignore-Related Jobs",
+      "title": "🚫 Skip Jobs Matching 'Keywords to Skip'",
       "type": "boolean",
-      "description": "Skip jobs matching the ignore-related keywords.",
+      "description": "When enabled, any job whose description contains a word from your 'Keywords to Skip' list is silently skipped and not saved.\n\nDisable if you want those jobs saved but flagged instead (the ignore_related field will be set to 'True' in the output).",
       "default": true
     },
+
     "follow_apply_redirect": {
-      "title": "Resolve Apply Redirect",
+      "title": "🔗 Follow Redirects for Apply Link",
       "type": "boolean",
-      "description": "Resolve and store the final application URL.",
+      "description": "When enabled, the scraper resolves the external 'Apply on company site' link to its final destination URL (following all redirects). Useful when you want the real company careers page URL instead of Indeed's redirect.\n\nSlightly slower — only enable if you need resolved URLs.",
       "default": false
     },
+
     "ignore_companies": {
-      "title": "Ignore Companies",
+      "title": "🚫 Companies to Skip (optional)",
       "type": "string",
-      "description": "Company names to ignore. One company per line.",
+      "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
       "editor": "textarea",
-      "default": ""
+      "prefill": ""
     },
+
     "ignore_related": {
-      "title": "Ignore Keywords",
+      "title": "🚫 Keywords to Skip (optional)",
       "type": "string",
-      "description": "Keywords indicating unrelated jobs. One keyword per line.",
+      "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "textarea",
-      "default": ""
+      "prefill": ""
     },
+
     "processed_job_urls": {
-      "title": "Processed Job URLs",
+      "title": "⏭️ Already-Processed Job URLs (skip duplicates across runs)",
       "type": "array",
-      "description": "Previously processed job URLs to skip.",
-      "editor": "json",
+      "description": "Paste Indeed job URLs you already scraped in a previous run. The scraper extracts job IDs from these and skips them — so you never collect the same job twice across multiple runs.\n\nPaste job URLs in the format:\nhttps://www.indeed.com/viewjob?jk=abc123def456",
+      "editor": "stringList",
       "prefill": []
     },
+
     "google_sheet_url": {
-      "title": "Google Sheet URL",
+      "title": "📊 Google Sheet URL (optional)",
       "type": "string",
-      "description": "Google Sheet shared with edit permission.",
-      "editor": "textfield",
-      "default": ""
+      "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Share → General access → 'Anyone with the link' → Editor.\n3. Paste the URL here.",
+      "editor": "textfield"
     },
+
     "sheet_name": {
-      "title": "Sheet Name",
+      "title": "📋 Google Sheet Tab Name",
       "type": "string",
-      "description": "Worksheet tab name.",
-      "editor": "textfield",
-      "default": "Indeed Jobs"
+      "description": "The worksheet tab where results are written. Created automatically if it doesn't exist.",
+      "default": "Indeed Jobs",
+      "editor": "textfield"
+    },
+
+    "concurrency": {
+      "title": "⚡ Concurrency (advanced)",
+      "type": "integer",
+      "description": "Number of parallel browser workers per phase (listing + processing). Total browser contexts = concurrency × 2.\n\nMemory guide:\n  1 GB RAM  → use 2\n  2 GB RAM  → use 4\n  4 GB RAM  → use 8\n\nHigher = faster but uses more memory. OOM crashes if set too high for your memory allocation.",
+      "default": 25,
+      "minimum": 1,
+      "maximum": 50
     }
-  }
+
+  },
+  "required": []
 }
