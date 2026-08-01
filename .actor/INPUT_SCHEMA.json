@@ -21,6 +21,7 @@
       "title": "Location",
       "type": "string",
       "description": "e.g. 'New York, NY' or 'Remote'",
+      "editor": "textfield",
       "default": ""
     },
     "search_country": {
