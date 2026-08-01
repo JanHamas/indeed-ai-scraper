@@ -30,14 +30,25 @@ DECODO_ACCOUNTS = [
         "rate_limit": 10,
     },
     # ← ADD MORE ACCOUNTS HERE:
+
     {
         "name": "account_3",
         "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm",
         "rate_limit": 10,
     },
+    
+    {
+        "name": "account_4",
+        "authorization": "Basic VTAwMDA0NTE2OTU6UFdfMWQ3MmE2YmNlNzkyNTY4NTZmNDYxYTFiMzRjZjA2NGRl",
+        "rate_limit": 10,
+    },
+
+    {
+        "name": "account_4",
+        "authorization": "Basic VTAwMDA0NDkyMDQ6UFdfMWQ1NTg0NjNjN2RhZDJjZjRjYmRlZDIzNTM2ZjA0ZTkz",
+        "rate_limit": 10,
+    },
 ]
-
-
 class ScraperSettings:
     MAX_CONCURRENCY     = 50
     REQUEST_TIMEOUT     = 120       # seconds per HTTP request
