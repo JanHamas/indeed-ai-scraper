@@ -41,7 +41,7 @@ async def main() -> None:
         ignore_related   = actor_input.get("ignore_related", "")
         max_jobs         = int(actor_input.get("max_jobs", 50))
         per_company_jobs = int(actor_input.get("per_company_jobs", 5))
-        concurrency      = min(int(actor_input.get("concurrency", 10)), ScraperSettings.MAX_CONCURRENCY)
+        concurrency      = min(int(actor_input.get("concurrency", 15)), ScraperSettings.MAX_CONCURRENCY)
         min_match_pct    = int(actor_input.get("min_match_percentage", 0))
 
         # ── Feature flags ─────────────────────────────────────────────────────

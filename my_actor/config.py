@@ -31,7 +31,7 @@ DECODO_ACCOUNTS = [
     },
     # ← ADD MORE ACCOUNTS HERE:
     {
-        "name": "account_3", "hamasjan5544"
+        "name": "account_3",
         "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm",
         "rate_limit": 10,
     },
