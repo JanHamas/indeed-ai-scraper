@@ -21,13 +21,13 @@ BRIGHTDATA_ACCOUNTS = [
         "host":     "brd.superproxy.io",
         "port":     44445,
     },
-    # Account 2 — hamasjan82@gmail.com github
-    {
-        "username": "brd-customer-hl_4cf2bac1-zone-web_unlocker1",
-        "password": "tk5gg3kjgyhg",
-        "host":     "brd.superproxy.io",
-        "port":     44445,
-    },
+    # # Account 2 — hamasjan82@gmail.com github
+    # {
+    #     "username": "brd-customer-hl_4cf2bac1-zone-web_unlocker1",
+    #     "password": "tk5gg3kjgyhg",
+    #     "host":     "brd.superproxy.io",
+    #     "port":     44445,
+    # },
     # ← ADD MORE ACCOUNTS HERE:
     # {
     #     "username": "brd-customer-hl_XXXXXXXX-zone-web_unlocker1",
@@ -46,8 +46,6 @@ class ScraperSettings:
     RETRY_DELAY_MAX     = 5        # seconds max between retries
     UID_FLUSH_SIZE      = 200      # flush processed UIDs to KV store after this many
     PAGES_PER_QUERY     = 50       # pagination pages pre-built per seed URL
-    CONTEXT_ROTATE_LIMIT = 50      # requests per account before rotating (unused in HTTP mode)
-    HEADLESS            = True
 
     # Indeed country → domain
     indeed_country_domains: dict[str, str] = {
