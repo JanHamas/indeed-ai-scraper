@@ -1,15 +1,24 @@
-import urllib.request
-import ssl
+import requests
 
-proxy = 'http://brd-customer-hl_dbeb3119-zone-web_unlocker1:rbw9khccsoqe@brd.superproxy.io:44445'
-url = 'https://www.indeed.com/jobs?q=machine+learning+engineer&start=10'
+# Use your Web Unblocker credentials here.
+USERNAME, PASSWORD = '_xMsTv_xMsTv', 'BdFRVpV~85vzy~'
 
-opener = urllib.request.build_opener(
-    urllib.request.ProxyHandler({'https': proxy, 'http': proxy}),
-    urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
+# Define proxy dict.
+proxies = {
+  'http': f'http://{USERNAME}:{PASSWORD}@unblock.oxylabs.io:60000',
+  'https': f'https://{USERNAME}:{PASSWORD}@unblock.oxylabs.io:60000',
+}
+
+response = requests.request(
+    'GET',
+    'https://www.indeed.com/jobs?q=machine+learning+engineer&start=10',
+    verify=False,  # Ignore the SSL certificate
+    proxies=proxies,
 )
 
-try:
-    print(opener.open(url).read().decode())
-except Exception as e:
-    print(f"Error: {e}")
+# Print result page to stdout
+print(response.text)
+
+# Save returned HTML to result.html file
+with open('result.html', 'w') as f:
+    f.write(response.text)
