@@ -1,7 +1,7 @@
 {
   "actorSpecification": 1,
   "name": "indeed-ai-scraper",
-  "title": "Indeed AI Scraper (BrightData)",
+  "title": "Indeed AI Scraper",
   "description": "Scrapes Indeed jobs via BrightData Web Unlocker HTTP API with AI-powered job matching.",
   "version": "1.0",
   "buildTag": "latest",
