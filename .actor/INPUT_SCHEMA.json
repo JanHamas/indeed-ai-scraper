@@ -1,0 +1,129 @@
+{
+  "title": "Indeed AI Scraper Input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "start_urls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "Paste Indeed search URLs directly. If empty, the scraper builds URLs from search_keywords.",
+      "editor": "stringList",
+      "prefill": []
+    },
+    "search_keywords": {
+      "title": "Search Keywords (one per line)",
+      "type": "string",
+      "description": "Job titles / keywords to search for. One per line. Used only when start_urls is empty.",
+      "editor": "textarea",
+      "default": ""
+    },
+    "search_location": {
+      "title": "Location",
+      "type": "string",
+      "description": "e.g. 'New York, NY' or 'Remote'",
+      "default": ""
+    },
+    "search_country": {
+      "title": "Country code",
+      "type": "string",
+      "description": "us, uk, ca, au, de, fr, in, sg, nz, ie, za",
+      "default": "us"
+    },
+    "date_filter": {
+      "title": "Date filter",
+      "type": "string",
+      "description": "any | 1 | 3 | 7 | 14 (days)",
+      "default": "any"
+    },
+    "account_cookies": {
+      "title": "Indeed Account Cookies (optional)",
+      "type": "array",
+      "description": "Paste your Indeed session cookies as a JSON array for logged-in scraping.",
+      "editor": "json",
+      "prefill": []
+    },
+    "about_me": {
+      "title": "About Me / Target Role",
+      "type": "string",
+      "description": "Describe the roles you're targeting. AI uses this to score job-title match.",
+      "editor": "textarea",
+      "default": ""
+    },
+    "min_match_percentage": {
+      "title": "Minimum AI Match %",
+      "type": "integer",
+      "description": "Jobs below this score are skipped (0 = collect all).",
+      "default": 0
+    },
+    "max_jobs": {
+      "title": "Max jobs to collect",
+      "type": "integer",
+      "default": 2000
+    },
+    "per_company_jobs": {
+      "title": "Max jobs per company",
+      "type": "integer",
+      "default": 5
+    },
+    "concurrency": {
+      "title": "Concurrency",
+      "type": "integer",
+      "description": "Number of parallel workers. Keep ≤ 50.",
+      "default": 25
+    },
+    "scrape_company_details": {
+      "title": "Scrape company details",
+      "type": "boolean",
+      "default": false
+    },
+    "save_unique_only": {
+      "title": "Save unique jobs only",
+      "type": "boolean",
+      "default": true
+    },
+    "skip_expired_jobs": {
+      "title": "Skip expired jobs",
+      "type": "boolean",
+      "default": true
+    },
+    "skip_ignore_related_jobs": {
+      "title": "Skip ignore-related jobs",
+      "type": "boolean",
+      "default": true
+    },
+    "follow_apply_redirect": {
+      "title": "Resolve apply redirect URL",
+      "type": "boolean",
+      "default": false
+    },
+    "ignore_companies": {
+      "title": "Ignore companies (one per line)",
+      "type": "string",
+      "editor": "textarea",
+      "default": ""
+    },
+    "ignore_related": {
+      "title": "Ignore-related keywords (one per line)",
+      "type": "string",
+      "editor": "textarea",
+      "default": ""
+    },
+    "processed_job_urls": {
+      "title": "Already-processed job URLs (to skip)",
+      "type": "array",
+      "editor": "json",
+      "prefill": []
+    },
+    "google_sheet_url": {
+      "title": "Google Sheet URL",
+      "type": "string",
+      "description": "Sheet must be shared as 'Anyone with the link can edit'.",
+      "default": ""
+    },
+    "sheet_name": {
+      "title": "Sheet tab name",
+      "type": "string",
+      "default": "Indeed Jobs"
+    }
+  }
+}

@@ -1,14 +1,11 @@
 {
-	"$schema": "https://apify.com/schemas/v1/actor.ide.json",
-	"actorSpecification": 1,
-	"name": "indeed-ai-scraper",
-	"title": "Empty Python project",
-	"description": "Empty project in Python.",
-	"version": "0.0",
-	"buildTag": "latest",
-	"meta": {
-		"templateId": "python-empty",
-		"generatedBy": "<FILL-IN-MODEL>"
-	},
-	"dockerfile": "../Dockerfile"
+  "actorSpecification": 1,
+  "name": "indeed-ai-scraper",
+  "title": "Indeed AI Scraper (BrightData)",
+  "description": "Scrapes Indeed jobs via BrightData Web Unlocker HTTP API with AI-powered job matching.",
+  "version": "1.0",
+  "buildTag": "latest",
+  "environmentVariables": {},
+  "dockerfile": "./Dockerfile",
+  "input": "./INPUT_SCHEMA.json"
 }
