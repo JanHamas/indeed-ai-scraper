@@ -1,0 +1,2902 @@
+I want switch from python playwright apify template to empty python project rewrite my indeed-ai-scraper
+compelete very simple and reliable through brightdata web unlocker apis the code logic
+should be same because i have tested this and very well know and don't write unused code like bridtata api bypass
+captcha, fingerprints etc.
+1, right now i have provided two account of brightdata i will be add like this multiples accounts base on my scraper scaling for now these two are okay.
+2, if request failed that should be retry of another api account one by if i have add 10 accounts.
+3, i'm building this scraper for apify platform so every time scraper run on docker keep conncurry and retry logic 
+correct base on that.
+4, if have add other account scraper should be follow same patter for scaling.
+5, scraper should be collect 100 jobs in mints.
+6, test scraper they working as expected.
+7, print message if account plain are finshed so i can buy subscription for that again.
+8, tell me where to add more accounts if need and scraper should be pick also that.
+9, should be workable if my scraper start on apify platform multiples user at same time.
+github account:hamasjan82@gmail.com
+brightdata:
+Rate limit
+50 req/s
+Username
+brd-customer-hl_dbeb3119-zone-web_unlocker1
+Password
+rbw9khccsoqe
+Host
+brd.superproxy.io
+Ports
+44445
+
+gmail account: hamasjan5544@gmail.com
+Rate limit
+50 req/s
+Username:
+brd-customer-hl_4cf2bac1-zone-web_unlocker1
+
+
+Passwords:
+tk5gg3kjgyhg
+
+Host:
+brd.superproxy.io
+
+Ports:
+44445
+
+this is my playwright scraper.
+"""
+run_local.py — Run the actor locally without Apify CLI.
+
+Usage:
+    python run_local.py
+
+Reads input from storage/key_value_stores/default/INPUT.json
+(same path the Apify CLI uses).
+"""
+import asyncio
+import os
+from pathlib import Path
+
+# Simulate Apify local storage layout
+os.environ.setdefault("APIFY_LOCAL_STORAGE_DIR", str(Path(__file__).parent / "storage"))
+
+from my_actor.main import main
+
+if __name__ == "__main__":
+    # Write a sample INPUT.json if it doesn't exist
+    input_path = Path("storage/key_value_stores/default/INPUT.json")
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    asyncio.run(main())
+
+
+
+
+{
+  "search_keywords": "",
+  "search_country": "us",
+  "search_location": "",
+  "date_filter": "any",
+
+  "start_urls": [
+    "https://www.indeed.com/jobs?q=python+developer&l=New+York%2C+NY",
+    "https://www.indeed.com/jobs?q=ai%20engineer&l=United%20States&ts=1785160562420&pts=1784918952152&from=searchOnDesktopSerp&rq=1&rsIdx=0&newcount=506&fromage=last"
+  ],
+
+  
+  "account_cookies": {
+    "title": "🍪 Indeed Account Cookies (optional — recommended)",
+    "type": "array",
+    "description": "Paste your Indeed session cookies as a JSON array. Lets the scraper act as a logged-in user for better results.\n\nHow to export cookies:\n1. Log into Indeed in Chrome.\n2. Install the 'Cookie-Editor' extension: https://chromewebstore.google.com/detail/nmckokihipjgplolmcmjakknndddifde\n3. Click Export → Export as JSON and paste here.",
+    "editor": "json",
+    "prefill": []
+  },
+
+  "about_me": "",
+  "min_match_percentage": 0,
+
+  "max_jobs": 2000,
+  "per_company_jobs": 5,
+
+  "scrape_company_details": false,
+  "save_unique_only": true,
+  "skip_expired_jobs": true,
+  "skip_ignore_related_jobs": true,
+  "follow_apply_redirect": false,
+
+  "ignore_companies": "",
+  "ignore_related": "",
+
+  "processed_job_urls": [],
+
+  "google_sheet_url": "",
+  "sheet_name": "Indeed Jobs",
+
+  "concurrency":2
+}
+
+
+"""
+Indeed Scraper — Apify Actor
+Entry point: my_actor/main.py
+"""
+from __future__ import annotations
+
+import asyncio, os
+from apify import Actor
+from .utils.config import ScraperSettings
+from .utils.helpers import (
+    load_scraper_config,
+    expand_to_paginated_urls,
+    extract_job_ids_from_urls,
+    build_indeed_search_urls,
+    showstartinginfo,
+    status_logger,
+    _flush_shared_batch,
+    sanitize_indeed_url
+)
+from .utils.workers import primary_listing_worker, hybrid_listing_worker, processing_worker
+from .utils.gsheet import upload_to_google_sheet
+
+PAGES_PER_QUERY = 50  # fixed pagination pages built per seed URL/keyword
+
+
+async def main() -> None:
+    async with Actor:
+        actor_input = await Actor.get_input() or {}
+
+        # ── Core config ───────────────────────────────────────────────────────
+        url_queue_raw    = actor_input.get("start_urls", [])
+        about_me         = actor_input.get("about_me", "").strip()
+        ignore_companies = actor_input.get("ignore_companies", "")
+        ignore_related   = actor_input.get("ignore_related", "")
+        max_jobs         = int(actor_input.get("max_jobs", 50))
+        per_company_jobs = int(actor_input.get("per_company_jobs", 5))
+        concurrency      = min(int(actor_input.get("concurrency", 10)), ScraperSettings.MAX_CONCURRENCY)
+        min_match_pct    = int(actor_input.get("min_match_percentage", 40))
+        proxies_path = ScraperSettings.PROXIES_PATH
+        proxies_state = ScraperSettings.PROXIES_STATE
+        headless         = ScraperSettings.HEADLESS
+
+        # ── Feature flags ─────────────────────────────────────────────────────
+        scrape_company_details = bool(actor_input.get("scrape_company_details", False))
+        save_unique_only       = bool(actor_input.get("save_unique_only", True))
+        follow_apply_redirect  = bool(actor_input.get("follow_apply_redirect", False))
+        skip_expired_jobs  = bool(actor_input.get("skip_expired_jobs", False))
+        skip_ignore_related_jobs  = bool(actor_input.get("skip_ignore_related_jobs", False))
+
+        # ── Search builder fields (used when start_urls is empty) ─────────────
+        search_keywords_raw    = actor_input.get("search_keywords", "").strip()
+        search_location        = actor_input.get("search_location", "").strip()
+        search_country         = actor_input.get("search_country", "us").strip().lower()
+        date_filter = actor_input.get("date_filter", "any").strip()
+
+        # Parse keywords — one per line
+        search_keywords = [k.strip() for k in search_keywords_raw.splitlines() if k.strip()]
+
+        # ── Google Sheets ─────────────────────────────────────────────────────
+        google_sheet_url = actor_input.get("google_sheet_url", "")
+        sheet_name       = actor_input.get("sheet_name", "Indeed Jobs")
+
+        # # ── Proxy setup ───────────────────────────────────────────────────────
+        proxies: list[str] = []
+
+        # ── Indeed account cookies ────────────────────────────────────────────
+        account_cookies: list[dict] = actor_input.get("account_cookies", [])
+
+        # ── Processed job URLs → extract IDs to skip ─────────────────────────
+        processed_urls_raw: list = actor_input.get("processed_job_urls", [])
+        processed_url_list: list[str] = []
+        for entry in processed_urls_raw:
+            if isinstance(entry, str):
+                processed_url_list.append(entry.strip())
+            elif isinstance(entry, dict):
+                processed_url_list.append(entry.get("url", "").strip())
+        processed_uids = extract_job_ids_from_urls([u for u in processed_url_list if u])
+
+        # ── Resolve URL list ──────────────────────────────────────────────────
+        # Priority 1: explicit start_urls
+        url_list: list[str] = []
+        for entry in url_queue_raw:
+            if isinstance(entry, str):
+                url_list.append(entry.strip())
+            elif isinstance(entry, dict):
+                url_list.append(entry.get("url", "").strip())
+        url_list = [sanitize_indeed_url(u) for u in url_list if u]   # ← add sanitize here
+
+        # Priority 2: build from keywords/location/country
+        if not url_list:
+            if not search_keywords:
+                Actor.log.error(
+                    "❌ Nothing to scrape — provide either 'start_urls' (Indeed search URLs) "
+                    "or 'search_keywords' (positions/keywords to search for)."
+                )
+                return
+            url_list = build_indeed_search_urls(
+                keywords=search_keywords,
+                location=search_location,
+                country=search_country,
+                date_filter=date_filter,
+            )
+            Actor.log.info(
+                f"🔧 No start_urls provided — built {len(url_list)} URL(s) "
+                f"from {len(search_keywords)} keyword(s)"
+            )
+
+        # ── Build config ──────────────────────────────────────────────────────
+        config = load_scraper_config(
+            url_list=url_list,
+            about_me=about_me,
+            ignore_companies_raw=ignore_companies,
+            ignore_related_raw=ignore_related,
+            skip_expired_jobs=skip_expired_jobs,
+            skip_ignore_related_jobs=skip_ignore_related_jobs,
+            max_jobs=max_jobs,
+            per_company_jobs=per_company_jobs,
+            min_match_percentage=min_match_pct,
+            concurrency=concurrency,
+            processed_uids=processed_uids,
+            account_cookies=account_cookies,
+            search_keywords=search_keywords,
+            search_location=search_location,
+            search_country=search_country,
+            scrape_company_details=scrape_company_details,
+            save_unique_only=save_unique_only,
+            follow_apply_redirect=follow_apply_redirect,
+            google_sheet_url=google_sheet_url,
+            sheet_name=sheet_name,
+            headless=headless,
+            proxies=proxies,
+            proxies_path=proxies_path,
+            proxies_state=proxies_state
+        )
+        # ── Auto-login when cookies given  ──────────────
+        if not account_cookies:
+            Actor.log.warning(
+                "⚠️ No cookies — scraping without login. "
+                "Indeed may show limited results, redirect to login page or trigger CAPTCHA."
+            )
+
+        await showstartinginfo(config)
+
+        # ── Shared queues and batch buffers ───────────────────────────────
+        url_queue = asyncio.PriorityQueue()
+        filter_queue = asyncio.Queue()
+
+        # Pre-build ALL pagination URLs for ALL seed queries before a
+        # single request goes out — 50 pages per seed, start=0..490.
+        paginated_urls = expand_to_paginated_urls(
+            config.url_queue, pages_per_query=PAGES_PER_QUERY
+        )
+        for start, url in paginated_urls:
+            await url_queue.put((start, url))
+
+        Actor.log.info(
+            f"📥 queued {len(paginated_urls)} pagination URL(s) "
+            f"({PAGES_PER_QUERY} per seed) across {len(config.url_queue)} quer(y/ies)"
+        )
+
+        batch_positions: list[str] = []
+        batch_links:     list[str] = []
+        batch_uids:      list[str] = []
+        batch_lock       = asyncio.Lock()
+
+        stop_event = asyncio.Event()
+
+        Actor.log.info(
+            f"🚀 Launching {concurrency} listing + {concurrency} processing workers"
+        )
+
+        status_task = asyncio.create_task(status_logger(config, stop_event))
+
+        
+        primary_listing_tasks = [
+            asyncio.create_task(
+                primary_listing_worker(
+                    config=config,
+                    url_queue=url_queue,
+                    filter_queue=filter_queue,
+                    batch_positions=batch_positions,
+                    batch_links=batch_links,
+                    batch_uids=batch_uids,
+                    batch_lock=batch_lock,
+                    worker_id=i,
+                )
+            )
+            for i in range(int(concurrency*16/100)) # 16% primary worker
+        ]
+
+        hybrid_listing_tasks = [
+            asyncio.create_task(
+                hybrid_listing_worker(
+                    config=config,
+                    url_queue=url_queue,
+                    filter_queue=filter_queue,
+                    batch_positions=batch_positions,
+                    batch_links=batch_links,
+                    batch_uids=batch_uids,
+                    batch_lock=batch_lock,
+                    worker_id=i,
+                )
+            )
+            for i in range(concurrency - int(concurrency*16/100))
+        ]
+
+        processing_tasks = [
+            asyncio.create_task(
+                processing_worker(
+                    config=config,
+                    url_queue=url_queue,
+                    filter_queue=filter_queue,
+                    worker_id=concurrency + i,
+                )
+            )
+            for i in range(concurrency)
+        ]
+
+        results = await asyncio.gather(*primary_listing_tasks, *hybrid_listing_tasks, *processing_tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                Actor.log.error(f"❌ Task {i} crashed: {result!r}")
+
+        await _flush_shared_batch(
+            config, batch_positions, batch_links, batch_uids, batch_lock, filter_queue
+        )
+
+        stop_event.set()
+        await status_task
+
+        Actor.log.info(
+            f"🏁 All workers done  |  ✅ saved: {config.extracted_jobs_counter}/{config.max_jobs}"
+        )
+    
+
+        # ── Google Sheets upload ──────────────────────────────────────────────
+        gs_url = (config.google_sheet_url or "").strip()
+        if gs_url:
+            if config._saved_jobs:
+                Actor.log.info(f"📊 Uploading {len(config._saved_jobs)} jobs to Google Sheets...")
+                await upload_to_google_sheet(
+                    link=gs_url,
+                    sheet_name=config.sheet_name,
+                    jobs=config._saved_jobs,
+                    log=Actor.log,
+                )
+            else:
+                Actor.log.warning("⚠️ No jobs to upload to Google Sheets")
+        else:
+            Actor.log.info("⏭️ No Google Sheet URL — skipping upload")
+
+        Actor.log.info("✅ Actor finished successfully")
+
+
+"""
+my_actor/workers.py
+listing_worker and processing_worker — Apify version.
+"""
+from __future__ import annotations
+
+import asyncio
+from urllib.parse import urljoin
+
+from apify import Actor
+from playwright.async_api import Browser
+
+from .config import ScraperSettings
+from .helpers import (
+    ScraperConfig,
+    create_context,
+    close_context_and_playwright, 
+    open_jobs_search_page,
+    simulate_human_behavior,
+    clear_queue,
+    flush_batch,
+    _flush_shared_batch,
+    update_processed_uids,
+    _base_url_of,
+    has_next_page,
+    purge_queue_beyond,
+)
+from .job_scraper import process_filter_jobs
+from .cloudflare import CloudflareBypasser
+
+# How many consecutive empty pops from url_queue before a listing worker
+# treats it as truly drained (rather than transiently empty while another
+# worker's failed-navigation retry is about to be re-queued).
+EMPTY_STREAK_LIMIT = 10
+EMPTY_POLL_DELAY = 0.5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Context rotation — picks next proxy automatically via rotator
+# ─────────────────────────────────────────────────────────────────────────────
+async def _maybe_rotate_context(
+    current_context,
+    current_page,
+    config: ScraperConfig,
+    worker_id: int,
+    phase: str,
+
+):
+    context_id = id(current_context)
+    async with config.context_lock:
+        count = config._context_requests.get(context_id, 0) + 1
+        config._context_requests[context_id] = count
+
+    if count < ScraperSettings.CONTEXT_ROTATE_LIMIT:
+        return current_context, current_page
+
+    Actor.log.info(
+        f"🔄 Worker {worker_id} [{phase}] hit {count} requests — rotating context + proxy"
+    )
+    await close_context_and_playwright(current_context)
+    async with config.context_lock:
+        config._context_requests.pop(context_id, None)
+
+    new_ctx = await create_context(config, worker_id)
+    async with config.context_lock:
+        config._context_requests[id(new_ctx)] = 0
+
+    new_page = new_ctx.pages[0] if new_ctx.pages else await new_ctx.new_page()
+
+    Actor.log.info(f"✅ Worker {worker_id} [{phase}] — fresh context ready")
+    return new_ctx, new_page
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Phase 1 body — listing (used by both primary and hybrid workers)
+# ─────────────────────────────────────────────────────────────────────────────
+async def _run_listing_phase(
+    config: ScraperConfig,
+    url_queue: asyncio.Queue,
+    filter_queue: asyncio.Queue,
+    batch_positions: list,
+    batch_links: list,
+    batch_uids: list,
+    batch_lock: asyncio.Lock,
+    worker_id: int,
+    context,
+    page,
+):
+    empty_streak = 0
+
+    while True:
+        if await config.is_limit_reached():
+            break
+        if config.is_login_wall:
+            clear_queue(url_queue)
+            break
+
+        try:
+            start, job_search_url = url_queue.get_nowait()
+            empty_streak = 0
+        except asyncio.QueueEmpty:
+            empty_streak += 1
+            if empty_streak >= EMPTY_STREAK_LIMIT:
+                # Queue's been empty across several checks — genuinely drained,
+                # not just a momentary gap from another worker's retry-requeue.
+                break
+            await asyncio.sleep(EMPTY_POLL_DELAY)
+            continue
+
+        base_url = _base_url_of(job_search_url)
+        if config.is_past_last_page(base_url, start):
+            url_queue.task_done()
+            continue
+
+        try:
+            context, page = await _maybe_rotate_context(
+                context, page, config, worker_id, "listing",
+            )
+            success = await open_jobs_search_page(page, start, job_search_url, url_queue, config)
+            if not success:
+                continue
+            Actor.log.info(f"We are listing from: {job_search_url}")
+
+            # ── Cloudflare bypass ─────────────────────────────────────────
+            try:
+                await CloudflareBypasser(page).detect_and_bypass()
+            except Exception as e:
+                Actor.log.info(f"❌ Cloudflare bypass error: {e}")
+                continue
+
+            await simulate_human_behavior(page)
+
+            if not await has_next_page(page):
+                if await config.mark_last_page(base_url, start):
+                    removed = await purge_queue_beyond(url_queue, base_url, start)
+                    Actor.log.info(
+                        f"🛑 Last page (start={start}) for '{base_url}' — "
+                        f"removed {removed} pagination URL(s) beyond it"
+                    )
+
+            # Scrape job cards
+            try:
+                companies_slc = await page.query_selector_all(
+                    '.cardOutline:not([aria-hidden="true"]) [data-testid="company-name"]'
+                )
+                positions_slc = await page.query_selector_all(
+                    '.cardOutline:not([aria-hidden="true"]) .jobTitle'
+                )
+                links_slc = await page.query_selector_all(
+                    '.cardOutline:not([aria-hidden="true"]) tr td a'
+                )
+                if len(companies_slc) != len(positions_slc) or len(companies_slc) != len(links_slc):
+                    Actor.log.warning(f"⚠️ Selector mismatch on {page.url}")
+            except Exception as e:
+                Actor.log.warning(f"⚠️ Card selection error: {e}")
+                url_queue.task_done()
+                continue
+
+            uids    = [await link.get_attribute("data-jk") for link in links_slc]
+            missing = [i for i, u in enumerate(uids) if not u]
+            if missing:
+                Actor.log.warning(f"⚠️ {len(missing)} cards missing data-jk on {page.url}")
+
+            pushed           = 0
+            positions_to_add = []
+            links_to_add     = []
+            uids_to_add      = []
+
+            for company, position, link, uid in zip(
+                companies_slc, positions_slc, links_slc, uids
+            ):
+                if await config.is_limit_reached():
+                    clear_queue(url_queue)
+                    break
+                if not uid:
+                    continue
+
+                company_text  = await company.inner_text()
+                position_text = await position.inner_text()
+                link_href = urljoin("https://www.indeed.com", await link.get_attribute("href"))
+
+                if not await config.try_add_job(uid, company_text):
+                    continue
+
+                positions_to_add.append(position_text)
+                links_to_add.append(link_href)
+                uids_to_add.append(uid)
+                pushed += 1
+
+            if pushed:
+                Actor.log.info(f"📋 Worker {worker_id} pushed {pushed} jobs to batch")
+
+            should_flush   = False
+            snap_positions = snap_links = snap_uids = []
+
+            async with batch_lock:
+                batch_positions.extend(positions_to_add)
+                batch_links.extend(links_to_add)
+                batch_uids.extend(uids_to_add)
+
+                if len(batch_positions) >= config.min_match_percentage:
+                    snap_positions = batch_positions.copy()
+                    snap_links     = batch_links.copy()
+                    snap_uids      = batch_uids.copy()
+                    batch_positions.clear()
+                    batch_links.clear()
+                    batch_uids.clear()
+                    should_flush = True
+
+            if should_flush:
+                await flush_batch(config, snap_positions, snap_links, snap_uids, filter_queue)
+
+        except Exception as e:
+            Actor.log.error(f"❌ Worker {worker_id} listing loop error: {e}")
+        finally:
+            url_queue.task_done()
+
+    return context, page
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Phase 2 body — draining filter_queue (used by all worker types)
+# ─────────────────────────────────────────────────────────────────────────────
+async def _run_processing_phase(
+    config: ScraperConfig,
+    url_queue: asyncio.Queue,
+    filter_queue: asyncio.Queue,
+    worker_id: int,
+    context,
+    page,
+):
+    while True:
+        if config.is_login_wall:
+            clear_queue(filter_queue)
+            break
+
+        try:
+            item = await asyncio.wait_for(filter_queue.get(), timeout=0.5)
+        except asyncio.TimeoutError:
+            # Done when either: nothing left to scrape, or quota reached.
+            if (url_queue.empty() and filter_queue.empty()) or await config.is_limit_reached():
+                break
+            continue
+        except asyncio.CancelledError:
+            break
+
+        url, pct = item
+        context, page = await _maybe_rotate_context(
+            context, page, config, worker_id, "processing",
+        )
+        try:
+            saved = await process_filter_jobs(
+                page=page, url=url, percentage=pct, config=config, filter_queue=filter_queue
+            )
+            if not saved:
+                await config.release_slot()
+        except Exception as e:
+            Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
+            await config.release_slot()
+        finally:
+            filter_queue.task_done()
+
+    return context, page
+
+# ─────────────────────────────────────────────────────────────────────────────
+# primary_listing_worker — lists until url_queue is truly empty, THEN
+# switches to processing filter_queue (same as hybrid).
+# ─────────────────────────────────────────────────────────────────────────────
+async def primary_listing_worker(
+    config: ScraperConfig,
+    url_queue: asyncio.Queue,
+    filter_queue: asyncio.Queue,
+    batch_positions: list,
+    batch_links: list,
+    batch_uids: list,
+    batch_lock: asyncio.Lock,
+    worker_id: int = 0,
+) -> None:
+    context = await create_context(config, worker_id)
+    async with config.context_lock:
+        config._context_requests[id(context)] = 0
+    page = context.pages[0] if context.pages else await context.new_page()
+
+    try:
+        context, page = await _run_listing_phase(
+            config, url_queue, filter_queue,
+            batch_positions, batch_links, batch_uids, batch_lock,
+            worker_id, context, page,
+        )
+    except Exception as e:
+        Actor.log.error(f"❌ Worker {worker_id} listing phase failed: {e}")
+
+    await _flush_shared_batch(
+        config, batch_positions, batch_links, batch_uids, batch_lock, filter_queue
+    )
+
+    # ── Switch to processing now that url_queue is empty ─────────────────────
+    try:
+        Actor.log.info(f"Primary listing worker {worker_id} switched to processing worker.")
+        context, page = await _run_processing_phase(
+            config, url_queue, filter_queue, worker_id, context, page
+        )
+    except Exception as e:
+        Actor.log.error(f"❌ Worker {worker_id} processing phase failed: {e}")
+    finally:
+        async with config.context_lock:
+            config._context_requests.pop(id(context), None)
+        await close_context_and_playwright(context)
+        Actor.log.info(f"🧹 Worker {worker_id} cleaned up")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# hybrid_listing_worker — identical lifecycle to primary now; kept as a
+# separate name so main.py's split ratio still works without other changes.
+# ─────────────────────────────────────────────────────────────────────────────
+async def hybrid_listing_worker(
+    config: ScraperConfig,
+    url_queue: asyncio.Queue,
+    filter_queue: asyncio.Queue,
+    batch_positions: list,
+    batch_links: list,
+    batch_uids: list,
+    batch_lock: asyncio.Lock,
+    worker_id: int = 0,
+) -> None:
+    context = await create_context(config, worker_id)
+    async with config.context_lock:
+        config._context_requests[id(context)] = 0
+    page = context.pages[0] if context.pages else await context.new_page()
+
+    try:
+        context, page = await _run_listing_phase(
+            config, url_queue, filter_queue,
+            batch_positions, batch_links, batch_uids, batch_lock,
+            worker_id, context, page,
+        )
+    except Exception as e:
+        Actor.log.error(f"❌ Worker {worker_id} listing phase failed: {e}")
+
+    await _flush_shared_batch(
+        config, batch_positions, batch_links, batch_uids, batch_lock, filter_queue
+    )
+
+    try:
+        Actor.log.info(f"Hybrid listing worker {worker_id} switched to processing worker.")
+        context, page = await _run_processing_phase(
+            config, url_queue, filter_queue, worker_id, context, page
+        )
+    except Exception as e:
+        Actor.log.error(f"❌ Worker {worker_id} processing phase failed: {e}")
+    finally:
+        async with config.context_lock:
+            config._context_requests.pop(id(context), None)
+        await close_context_and_playwright(context)
+        Actor.log.info(f"🧹 Worker {worker_id} cleaned up")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# processing_worker — dedicated processing-only worker
+# ─────────────────────────────────────────────────────────────────────────────
+async def processing_worker(
+    config: ScraperConfig,
+    url_queue: asyncio.Queue,
+    filter_queue: asyncio.Queue,
+    worker_id: int = 0,
+) -> None:
+    context = await create_context(config, worker_id)
+    async with config.context_lock:
+        config._context_requests[id(context)] = 0
+    page = context.pages[0] if context.pages else await context.new_page()
+    
+    try:
+        context, page = await _run_processing_phase(
+            config, url_queue, filter_queue, worker_id, context, page
+        )
+    except Exception as e:
+        Actor.log.error(f"❌ Processing worker {worker_id} failed: {e}")
+    finally:
+        async with config.context_lock:
+            config._context_requests.pop(id(context), None)
+        await close_context_and_playwright(context)
+        Actor.log.info(f"🧹 Processing worker {worker_id} cleaned up")
+
+"""
+parse_indeed_embedded_json.py
+
+Some Indeed job pages (often requested with vjs=3&json=1, or served to
+certain clients) embed the job's full structured data directly in the
+HTML as JSON, instead of only relying on rendered DOM elements:
+
+  1. <script type="application/ld+json">{...JobPosting...}</script>
+     A standard schema.org block. Most stable — Indeed keeps this
+     consistent for Google/SEO rich results regardless of which visual
+     layout (our earlier Format A / Format B) is shown to the user.
+
+  2. window._rootProps = {...huge internal hydration state...};
+     Indeed's own frontend data model — richer (job age text, apply
+     link, sanitized description, salary breakdown) but uses internal
+     field names that can be renamed between deploys. Treat as a bonus
+     layer, not your only source.
+
+Strategy: parse ld+json first (always trustworthy), then opportunistically
+enrich with window._rootProps fields if present, falling back gracefully
+per-field if the internal shape has shifted.
+"""
+
+import json
+import re
+from typing import Optional
+
+
+def _find_json_after(text: str, marker: str) -> Optional[dict]:
+    """
+    Find `marker` (e.g. 'window._rootProps = ' or 'window._rootProps=') in
+    text and parse the JSON object that follows it, using json.JSONDecoder
+    .raw_decode so we don't need to hand-roll brace/string-escape matching —
+    it parses exactly one JSON value and tells us where it stopped.
+    """
+    idx = text.find(marker)
+    if idx == -1:
+        return None
+    start = idx + len(marker)
+    # skip whitespace
+    while start < len(text) and text[start] in " \t\r\n":
+        start += 1
+    if start >= len(text) or text[start] != "{":
+        return None
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text, start)
+        return obj
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_ld_json_jobposting(html: str) -> Optional[dict]:
+    for match in re.finditer(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        re.DOTALL,
+    ):
+        raw = match.group(1).strip()
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("@type") == "JobPosting":
+            return obj
+        if isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, dict) and item.get("@type") == "JobPosting":
+                    return item
+    return None
+
+
+def _extract_root_props(html: str) -> Optional[dict]:
+    for marker in ("window._rootProps = ", "window._rootProps="):
+        obj = _find_json_after(html, marker)
+        if obj:
+            return obj
+    return None
+
+
+def _html_to_text(html_fragment: Optional[str]) -> str:
+    """
+    Cheap HTML->text for the job description block. Good enough for
+    dedupe/keyword-filter/JobBERT input; not meant to preserve formatting.
+    """
+    if not html_fragment:
+        return ""
+    text = re.sub(r"<br\s*/?>", "\n", html_fragment, flags=re.IGNORECASE)
+    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&#39;", "'", text)
+    text = re.sub(r"&quot;", '"', text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def parse_indeed_job_from_embedded_json(html: str) -> dict:
+    data = {
+        "title": None,
+        "company": None,
+        "company_url": None,
+        "location": None,
+        "salary": None,
+        "salary_min": None,
+        "salary_max": None,
+        "job_type": None,
+        "is_remote": None,
+        "description_html": None,
+        "description_text": None,
+        "date_posted": None,
+        "valid_through": None,
+        "posted_age_text": None,
+        "apply_url": None,
+        "job_id": None,
+        "source": [],  # which layer(s) supplied data, for debugging
+    }
+
+    ld = _extract_ld_json_jobposting(html)
+    if ld:
+        data["source"].append("ld+json")
+        data["title"] = ld.get("title")
+        org = ld.get("hiringOrganization") or {}
+        data["company"] = org.get("name")
+        data["company_url"] = org.get("sameAs")
+
+        loc = (ld.get("jobLocation") or {}).get("address") or {}
+        loc_parts = [loc.get("addressLocality"), loc.get("addressRegion")]
+        loc_parts = [p for p in loc_parts if p]
+        if loc_parts:
+            data["location"] = ", ".join(loc_parts)
+
+        salary = ld.get("baseSalary") or {}
+        value = salary.get("value") or {}
+        if value:
+            data["salary_min"] = value.get("minValue")
+            data["salary_max"] = value.get("maxValue")
+            currency = salary.get("currency", "")
+            unit = value.get("unitText", "").lower()
+            if data["salary_min"] and data["salary_max"]:
+                data["salary"] = (
+                    f"${data['salary_min']:,.0f} - ${data['salary_max']:,.0f} "
+                    f"a {unit.rstrip('ly') or 'year'}"
+                ).replace("a yearly", "a year").replace("a year", "a year")
+
+        emp_types = ld.get("employmentType") or []
+        if emp_types:
+            data["job_type"] = ", ".join(
+                t.replace("_", "-").title() for t in emp_types
+            )
+
+        data["is_remote"] = ld.get("jobLocationType") == "TELECOMMUTE"
+        data["description_html"] = ld.get("description")
+        data["date_posted"] = ld.get("datePosted")
+        data["valid_through"] = ld.get("validThrough")
+
+    root = _extract_root_props(html)
+    if root:
+        data["source"].append("_rootProps")
+
+        # job id
+        data["job_id"] = data["job_id"] or root.get("jobKey")
+
+        # title fallback
+        data["title"] = data["title"] or root.get("jobTitle")
+
+        # location fallback
+        data["location"] = data["location"] or root.get("jobLocation")
+
+        # nested header model (company, remote flag, job type)
+        try:
+            header = (
+                root["jobInfoWrapperModel"]["jobInfoModel"]
+                ["jobInfoHeaderModel"]
+            )
+            data["company"] = data["company"] or header.get("companyName")
+            data["location"] = data["location"] or header.get("formattedLocation")
+            remote_model = header.get("remoteWorkModel") or {}
+            if remote_model.get("type") == "REMOTE_ALWAYS":
+                data["is_remote"] = True
+        except (KeyError, TypeError):
+            pass
+
+        try:
+            job_type = (
+                root["jobInfoWrapperModel"]["jobInfoModel"]
+                ["jobMetadataHeaderModel"]["jobType"]
+            )
+            data["job_type"] = data["job_type"] or job_type
+        except (KeyError, TypeError):
+            pass
+
+        # salary fallback / enrichment
+        salary_model = root.get("salaryInfoModel") or {}
+        if salary_model.get("salaryText"):
+            data["salary"] = salary_model["salaryText"]
+        data["salary_min"] = data["salary_min"] or salary_model.get("salaryMin")
+        data["salary_max"] = data["salary_max"] or salary_model.get("salaryMax")
+
+        # posted age text, e.g. "30+ days ago"
+        try:
+            data["posted_age_text"] = root["jobMetadataFooterModel"]["age"]
+        except (KeyError, TypeError):
+            pass
+
+        # apply link
+        try:
+            data["apply_url"] = (
+                root["viewJobButtonLinkContainerModel"]
+                ["viewJobButtonLinkModel"]["href"]
+            )
+        except (KeyError, TypeError):
+            pass
+
+        # richer sanitized description, if present, wins over ld+json's copy
+        try:
+            root_description_html = root["sanitizedJobDescription"]["content"]
+            if root_description_html:
+                data["description_html"] = root_description_html
+        except (KeyError, TypeError):
+            pass
+
+    # plain-text version for dedupe / keyword filtering / JobBERT input,
+    # derived from whichever description_html we ended up with
+    data["description_text"] = _html_to_text(data["description_html"])
+
+    return data
+
+"""
+my_actor/job_scraper.py
+Scrapes full job details from a single Indeed job page.
+Field names match ScraperSettings.extraction_fields exactly.
+"""
+from __future__ import annotations
+
+import asyncio, re
+import random
+import urllib.parse
+from datetime import datetime, timezone
+
+from apify import Actor
+from playwright.async_api import Page
+
+from .config import ScraperSettings
+from .helpers import (
+    ScraperConfig,
+    simulate_human_behavior,
+    extract_salary_job_types,
+    extract_rating_and_reviews,
+    extract_external_apply_link,
+    resolve_redirect,
+    check_remote_status,
+    push_job_data,
+    _get_company,              # ← add
+    _get_company_indeed_url,   # ← add
+    _extract_posted_date,      # ← add
+    clear_queue
+)
+from queue import Queue
+from .cloudflare import CloudflareBypasser
+from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
+
+async def process_filter_jobs(
+    page: Page,
+    url: str,
+    percentage: float,
+    config: ScraperConfig,
+    filter_queue: Queue,
+) -> bool:
+    """
+    Scrape full job details from an Indeed job URL.
+    Returns True if saved successfully, False otherwise.
+    """
+    data: dict = {field: "" for field in ScraperSettings.extraction_fields}
+
+    # ── Static / known-at-call-time fields ───────────────────────────────────
+    data["url"]                     = url
+    data["jobMatch"]                = percentage
+    data["scrapedAt"]               = datetime.now(timezone.utc).isoformat()
+    data["searchInput/country"]     = config.search_country
+    data["searchInput/location"]    = config.search_location
+    data["searchInput/position"]    = config.about_me  # target titles used for this run
+
+    # ── Load page with retries ────────────────────────────────────────────────
+    for attempt in range(3):
+        try:
+            await page.goto(url, wait_until="load")
+            break
+        except Exception as e:
+            Actor.log.warning(f"⏳ Attempt {attempt + 1}/3 failed: {url}")
+            if attempt < 2:
+                await asyncio.sleep(random.randint(2, 5))
+    else:
+        await filter_queue.put((url, percentage))
+        Actor.log.error(f"❌ All retries failed re-queued: {url}")
+        return False
+
+    # ── Cloudflare bypass ─────────────────────────────────────────
+    try:
+        await CloudflareBypasser(page).detect_and_bypass()
+    except Exception as e:
+        Actor.log.info(f"❌ Cloudflare bypass error: {e}")
+        await filter_queue.put((url, percentage))
+        return False
+
+    await simulate_human_behavior(page)
+
+    # check if browser detected
+    if "Performing additional browser verification" in await page.content():
+        attempt = 0
+        max_attempts = 3
+        # while attempt < max_attempts:
+        while True:
+            attempt += 1
+            Actor.log.info(f"Browser verification detected — attempt {attempt}/{max_attempts}")
+            await asyncio.sleep(random.randint(3, 6))
+            if "We could not verify this request. Please refresh and try again." in await page.content():
+                await asyncio.sleep(random.randint(3, 6))
+                await page.reload(wait_until="load")
+            elif "Performing additional browser verification" not in await page.content():
+                break
+
+    # ── Ignore-related keyword filter ─────────────────────────────────────────
+    try:
+        if config.ignore_related:
+            content = await page.locator("body").inner_text()
+            if any(kw in content for kw in config.ignore_related):
+                Actor.log.info(f"⏭ Skipped (ignore_related): {url}")
+                if config.skip_ignore_related_jobs:
+                    await config.release_slot()   # ← add
+                    return False
+    except Exception as e:
+        Actor.log.error(f"❌ ignore_related check failed: {e}")
+        return False
+
+    html = await page.content()
+    job = parse_indeed_job_from_embedded_json(html)
+
+    if job["title"]:  # ld+json (or _rootProps) was found and parsed
+        data["positionName"]      = job["title"]
+        data["company"]           = job["company"]
+        data["location"]          = job["location"]
+        data["salary"]            = job["salary"]
+        data["jobType"]           = job["job_type"]
+        data["isRemote"]          = "Remote" if job["is_remote"] else data["isRemote"]
+        data["postedAt"]          = job["posted_age_text"] or data["postedAt"]
+        data["description"]       = job["description_text"] or data["description"]
+        data["descriptionHTML"]   = job["description_html"] or data["descriptionHTML"]
+        data["externalApplyLink"] = job["apply_url"] or data["externalApplyLink"]
+        data["id"]                = job["job_id"] or data["id"]
+
+        # ── Job ID fallback from the URL if the embedded JSON didn't have one ──
+        if not data["id"]:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(page.url).query)
+            data["id"] = params.get("jk", [""])[0]
+
+        data["searchInput"] = {
+            "country":  data["searchInput/country"],
+            "location": data["searchInput/location"],
+            "position": data["searchInput/position"],
+        }
+
+        try:
+            await push_job_data(data, config)
+            Actor.log.info(
+                f"✅ Extracted (embedded json): {data['positionName']} @ {data['company']}"
+                + (f" → {percentage}%" if config.ai_matching_enabled else "")
+            )
+            return True
+        except Exception as e:
+            Actor.log.error(f"❌ Push failed (embedded json): {url} | {e}")
+            return False
+
+    # fall back to your existing DOM selectors (Format A / Format B)
+    try:
+        # ── Check page is valid ───────────────────────────────────────────────
+        page_title = await page.title()
+        if "not found" in page_title.lower():
+            Actor.log.info(f"⏭ Job removed/expired: {url}")
+            await config.release_slot()           # ← add
+            return False
+
+        # Check if Indeed redirected to the sign-in page (cookies expired)
+        if "sign in | indeed accounts" in page_title.lower():
+            Actor.log.warning(
+                f"🛑 Indeed redirected to the sign-in page — terminating scrape. "
+                f"Update cookies: {page.url}"
+            )
+            config.signal_login_wall()
+            clear_queue(filter_queue)
+            return False
+
+        # ── Company ───────────────────────────────────────────────────────────
+        company = await _get_company(page)
+        if not company:
+            Actor.log.warning(f"⚠️ No company found re-queued: {url}")
+            await filter_queue.put((url, percentage))
+            return False
+        data["company"] = company
+
+        # ── Position name ─────────────────────────────────────────────────────
+        position_locator = page.locator(
+            '[data-testid="jobsearch-JobInfoHeader-title"] span'
+        ).first
+        position_text = await position_locator.text_content()
+        if not position_text:
+            Actor.log.warning(f"⚠️ No position title found: {url}")
+            return False
+        data["positionName"]         = position_text.strip()
+        data["searchInput/position"] = position_text.strip()
+
+        # ── Salary & Job Type ─────────────────────────────────────────────────
+        # extract_salary_job_types returns (salary, jt0, jt1, jt2, jt3)
+        # We collapse all job type tokens into a single comma-separated string
+        salary, job_types = await extract_salary_job_types(page)
+        data["salary"]  = salary
+        data["jobType"] = ", ".join(job_types)
+
+        # ── Location ──────────────────────────────────────────────────────────
+        try:
+            loc = page.locator('[data-testid="inlineHeader-companyLocation"]').first
+            data["location"] = (await loc.inner_text()).strip()
+        except Exception:
+            data["location"] = ""
+
+        # ── Apply type ────────────────────────────────────────────────────────
+        apply_exists       = await page.locator('button[aria-label*="Apply on company site"]').count() > 0
+        data["applyType"]  = "CS Apply" if apply_exists else "Easy Apply"
+
+        # ── External apply link (+ optional redirect resolution) ──────────────
+        raw_apply_link              = await extract_external_apply_link(page)
+        data["externalApplyLink"]   = raw_apply_link
+
+        if config.follow_apply_redirect and raw_apply_link:
+            resolved = await resolve_redirect(page, raw_apply_link)
+            if resolved != raw_apply_link:
+                data["externalApplyLink"] = resolved
+                Actor.log.info(f"🔗 Resolved apply link: {resolved}")
+
+        # ── Benefits ──────────────────────────────────────────────────────────
+        benefit_items = await page.locator('[data-testid="benefits-test"] ul li').all()
+        benefits = ""
+        for li in benefit_items:
+            text = await li.inner_text()
+            if text:
+                benefits += f"{text.strip()}\n"
+        data["benefits"] = benefits.strip()
+
+        # ── Description (plain text + HTML) ───────────────────────────────────
+        desc_loc = page.locator("#jobDescriptionText").first
+        if await desc_loc.count() > 0:
+            data["description"]     = (await desc_loc.inner_text()).strip()
+            data["descriptionHTML"] = (await desc_loc.inner_html()).strip()
+        else:
+            data["description"]     = ""
+            data["descriptionHTML"] = ""
+
+        # ── Remote status ─────────────────────────────────────────────────────
+        remote_badge = ""
+        try:
+            container = page.locator('[data-testid="jobsearch-CompanyInfoContainer"]').first
+            if await container.count() > 0:
+                keywords = {"remote", "hybrid", "in-person", "on-site", "on site"}
+                for div in await container.locator("div").all():
+                    text = (await div.inner_text()).strip().lower()
+                    if text in keywords:
+                        remote_badge = text
+                        break
+        except Exception:
+            pass
+        data["isRemote"] = check_remote_status(
+            data["description"], data["location"], remote_badge
+        )
+
+        # ── Job ID ────────────────────────────────────────────────────────────
+        params      = urllib.parse.parse_qs(urllib.parse.urlparse(page.url).query)
+        data["id"]  = params.get("jk", [""])[0]
+        if not data["id"]:
+            Actor.log.warning(f"⚠️ No job_id found: {url}")
+
+        # ── Posting date ──────────────────────────────────────────────────────
+        posted_at, posting_date_parsed = await _extract_posted_date(page)
+        data["postedAt"] = posted_at
+        data["postingDateParsed"] = posting_date_parsed
+
+        # ── Expiry ────────────────────────────────────────────────────────────
+        expired_loc      = page.locator(":text-is('This job has expired on Indeed')").first
+        is_expired       = await expired_loc.is_visible()
+        data["isExpired"] = True if is_expired else False
+        if is_expired and config.skip_expired_jobs:
+            await config.release_slot()           # ← add
+            return False
+
+        # ── Rating & Reviews ──────────────────────────────────────────────────
+        rr                    = await extract_rating_and_reviews(page)
+        data["rating"]        = float(rr.get("rating") or 0)
+        data["reviewsCount"]  = int(rr.get("review_count") or 0)
+
+        # ── Company Indeed URL ────────────────────────────────────────────────
+        data["companyIndeedUrl"] = await _get_company_indeed_url(page)
+
+        # ── Company details (optional — visits /cmp/<slug>) ───────────────────
+        if config.scrape_company_details:
+            # company_info = await fetch_company_details(page, data["company"])
+            # data["companySize"]        = company_info.get("company_size", "")
+            # data["companyIndustry"]    = company_info.get("company_industry", "")
+            # data["companyDescription"] = company_info.get("company_description", "")
+            pass
+
+        # ── searchInput composite ─────────────────────────────────────────────
+        data["searchInput"] = {
+            "country":  data["searchInput/country"],
+            "location": data["searchInput/location"],
+            "position": data["searchInput/position"],
+        }
+
+        # ── Push to Apify dataset ─────────────────────────────────────────────
+        await push_job_data(data, config)
+        Actor.log.info(
+            f"✅ Extracted: {data['positionName']} @ {data['company']}"
+            + (f" → {percentage}%" if config.ai_matching_enabled else "")
+        )
+        return True
+    except Exception as e:
+        Actor.log.error(f"❌ Extraction failed: {url} | {e}")
+        await config.release_slot()               # ← add
+        return False
+
+
+"""
+src/helpers.py
+All dataclasses, config builder, and utility functions.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import random
+import re, requests
+from dataclasses import dataclass, field
+from datetime import datetime, timezone 
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse, parse_qs, urlencode
+from dotenv import load_dotenv
+
+from apify import Actor
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from .config import ScraperSettings
+load_dotenv()
+from playwright.async_api import Browser, Page
+import json
+from pathlib import Path
+from ..utils import fg_generator
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Indeed search URL builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_indeed_search_urls(
+    keywords:    list[str],
+    location:    str,
+    country:     str,
+    date_filter: str = "any",   # ← new param
+) -> list[str]:
+    """
+    Build Indeed search URLs from keywords + location + country.
+    date_filter values: "any" | "1" | "3" | "7" | "14"
+    Indeed's fromage param = max age in days (from age).
+    """
+    base_domain = ScraperSettings.indeed_country_domains.get(
+        country.lower().strip(), ScraperSettings.indeed_country_domains["us"]
+    )
+    urls = []
+    for kw in keywords:
+        kw = kw.strip()
+        if not kw:
+            continue
+        params = {"q": kw}
+        if location and location.strip():
+            params["l"] = location.strip()
+        if date_filter and date_filter != "any":
+            params["fromage"] = date_filter   # e.g. fromage=1 → last 24h
+        base = f"{base_domain}/jobs?{urlencode(params)}"
+        urls.append(base)
+    Actor.log.info(
+        f"🔧 Built {len(urls)} search URL(s) for {len(keywords)} keyword(s) "
+        f"| country={country} | location='{location}' | date_filter={date_filter}"
+    )
+    return urls
+
+# ─────────────────────────────────────────────────────────────────────────────
+# User provded proxies loader
+# ─────────────────────────────────────────────────────────────────────────────
+from urllib.parse import urlparse  # add if not already imported
+
+def _parse_proxy_entry(raw: str) -> list[str] | None:
+    """Normalize any supported proxy format → [host, port, user, pwd] (user/pwd may be '')."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    if raw.startswith(("http://", "https://", "socks5://")):
+        try:
+            p = urlparse(raw)
+            if not p.hostname or not p.port:
+                return None
+            return [p.hostname, str(p.port), p.username or "", p.password or ""]
+        except Exception:
+            return None
+    parts = raw.split(":")
+    if len(parts) == 4:
+        return parts
+    if len(parts) == 2:
+        return [parts[0], parts[1], "", ""]
+    return None
+
+
+def is_proxy_alive(ip: str, port: str, user: str = "", pwd: str = "", timeout: int = 8) -> bool:
+    """Quick connectivity check — run off the event loop via asyncio.to_thread."""
+    try:
+        proxy_url = f"http://{user}:{pwd}@{ip}:{port}" if user else f"http://{ip}:{port}"
+        r = requests.get("https://api.ipify.org", proxies={"https": proxy_url}, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# Indeed job-ID extractor (for "already processed" URL list)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_job_ids_from_urls(url_list: list[str]) -> set[str]:
+    """Extract jk= param from Indeed job-detail URLs."""
+    ids: set[str] = set()
+    for url in url_list:
+        url = url.strip()
+        if not url:
+            continue
+        try:
+            params = parse_qs(urlparse(url).query)
+            jk = params.get("jk", [""])[0]
+            if jk:
+                ids.add(jk)
+        except Exception:
+            pass
+    if ids:
+        Actor.log.info(f"📂 Extracted {len(ids)} job IDs from processed_job_urls input")
+    return ids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SemanticMatcher (optional — only loaded when about_me is provided)
+# ─────────────────────────────────────────────────────────────────────────────
+
+if os.getenv("APP_ENV") != "local":
+    import torch
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.util import batch_to_device, cos_sim
+
+    _UNIVERSAL_ABBR: Dict[str, str] = {
+        r'\bsr\.?\b':     'senior',
+        r'\bjr\.?\b':     'junior',
+        r'\bmgr\.?\b':    'manager',
+        r'\bdir\.?\b':    'director',
+        r'\bassoc\.?\b':  'associate',
+        r'\bspec\.?\b':   'specialist',
+        r'\bcoord\.?\b':  'coordinator',
+        r'\beng\.?\b':    'engineer',
+        r'\bdev\.?\b':    'developer',
+        r'\barch\.?\b':   'architect',
+        r'\brep\.?\b':    'representative',
+        r'\bvp\b':        'vice president',
+        r'\bsvp\b':       'senior vice president',
+        r'\bcto\b':       'chief technology officer',
+        r'\bceo\b':       'chief executive officer',
+        r'\bcoo\b':       'chief operating officer',
+        r'\bcfo\b':       'chief financial officer',
+    }
+
+    _NOISE_RE = re.compile(
+        r'\(.*?\)|\[.*?\]'
+        r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
+        r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
+        r'|urgent|immediate|opening|opportunity|position|role'
+        r'|new grad|entry.level|experienced)\b',
+        re.IGNORECASE,
+    )
+    _SEP_RE        = re.compile(r'[-–—|·•/\\]')
+    _WHITESPACE_RE = re.compile(r'\s+')
+
+    def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
+        abbr_map: Dict[str, str] = {}
+        paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
+        for m in paren_re.finditer(about_me):
+            left, right = m.group(1).strip(), m.group(2).strip()
+            ls = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
+            rs = sum(1 for c in right if c.isupper()) / max(len(right), 1)
+            if len(left) <= 8 and ls >= rs:
+                abbr, expansion = left, right
+            elif len(right) <= 8 and rs > ls:
+                abbr, expansion = right, left
+            else:
+                continue
+            if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
+                abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
+        camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+        for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
+            parts = camel_split.split(token)
+            spaced = ' '.join(parts).lower()
+            if spaced != token.lower() and len(parts) > 1:
+                abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
+        symbol_re = re.compile(
+            r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b|(\.[A-Z][A-Za-z0-9]+)'
+        )
+        for m in symbol_re.finditer(about_me):
+            symbol = (m.group(1) or m.group(2)).strip()
+            if not symbol or len(symbol) > 12:
+                continue
+            normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
+            if normalized and normalized != symbol.lower():
+                abbr_map[re.escape(symbol)] = normalized
+        return abbr_map
+
+    def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
+        compiled = []
+        for pattern, replacement in abbr_map.items():
+            try:
+                compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
+            except re.error:
+                pass
+        return compiled
+
+    class SemanticMatcher:
+        MODEL_NAME = "TechWolf/JobBERT-v2"
+
+        def __init__(self, model_name: str = MODEL_NAME):
+            self._model          = SentenceTransformer(model_name)
+            self._lock           = asyncio.Lock()
+            self._cached_keywords: Optional[str]             = None
+            self._query_embeddings                           = None
+            self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
+
+        def _encode(self, texts: List[str]):
+            features = self._model.tokenize(texts)
+            features = batch_to_device(features, self._model.device)
+            features["text_keys"] = ["anchor"]
+            with torch.no_grad():
+                out = self._model.forward(features)
+            emb = out["sentence_embedding"]
+            return torch.nn.functional.normalize(emb, p=2, dim=1)
+
+        def _refresh_if_needed(self, user_keywords: str) -> None:
+            if user_keywords == self._cached_keywords:
+                return
+            abbr_map            = _extract_abbr_from_user_text(user_keywords)
+            self._compiled_abbr = _compile_patterns(abbr_map)
+            tokens = [t.strip() for t in re.split(r'[\n\r,|/•·]+', user_keywords) if t.strip() and len(t.strip()) > 1]
+            if not tokens:
+                tokens = [user_keywords.strip()]
+            seen, unique_tokens = set(), []
+            for t in tokens:
+                k = t.lower()
+                if k not in seen:
+                    seen.add(k)
+                    unique_tokens.append(t)
+            self._query_embeddings = self._encode([f"Job title: {t}" for t in unique_tokens])
+            self._cached_keywords  = user_keywords
+
+        def _clean_title(self, title: str) -> str:
+            t = title.lower()
+            for pattern, replacement in _UNIVERSAL_ABBR.items():
+                t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+            for compiled_re, replacement in self._compiled_abbr:
+                t = compiled_re.sub(replacement, t)
+            t = _NOISE_RE.sub(' ', t)
+            t = _SEP_RE.sub(' ', t)
+            return _WHITESPACE_RE.sub(' ', t).strip()
+
+        def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+            self._refresh_if_needed(user_keywords)
+            title_embeddings = self._encode([self._clean_title(t) for t in job_titles])
+            best_scores      = cos_sim(self._query_embeddings, title_embeddings).max(dim=0).values.cpu().numpy()
+            return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
+
+        async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+            if not user_keywords or not job_titles:
+                return []
+            async with self._lock:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
+
+    _matcher = SemanticMatcher()
+
+
+async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[float]:
+    if not about_me or not about_me.strip():
+        return [100.0] * len(job_titles)
+    if os.getenv("APP_ENV") == "local":
+        return [random.randint(0, 100) for _ in range(len(job_titles))]
+    return await _matcher.match(about_me, job_titles)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ScraperConfig
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class ScraperConfig:
+    # Core
+    about_me:             str
+    ignore_companies:     List[str]
+    ignore_related:       List[str]
+    concurrency:          int
+    url_queue:            List[str]
+    max_jobs:             int
+    per_company_jobs:     int
+    min_match_percentage: int
+
+    # Search builder settings (used when start_urls is empty)
+    search_keywords:     List[str] = field(default_factory=list)
+    search_location:     str       = ""
+    search_country:      str       = "us"
+
+    # Feature flags
+    scrape_company_details:   bool = False  # fetch company profile page
+    save_unique_only:         bool = True   # deduplicate by (position, company)
+    follow_apply_redirect:    bool = False  # resolve external apply link
+    skip_expired_jobs:        bool = False
+    skip_ignore_related_jobs: bool = False
+
+    # Google Sheets
+    google_sheet_url: str = ""
+    sheet_name:       str = "Indeed Jobs"
+
+    # Browser
+    headless:      bool           = True
+    proxies_path:  Optional[Path] = None
+    proxies_state: Optional[Path] = None
+    proxy_config:  dict           = field(default_factory=dict)
+    proxies:       List[str]      = field(default_factory=list)
+
+    # Auth
+    account_cookies: List[dict]         = field(default_factory=list)
+
+    # Runtime state
+    processed_uids: Set[str] = field(default_factory=set)
+
+    # Internal tracking
+    ignored_companies_seen:    Set[str]   = field(default_factory=set)
+    new_processed_company_jobs: List[str] = field(default_factory=list)
+    extracted_jobs_counter:    int        = field(default=0, init=False)
+    _saved_jobs:               List[dict] = field(default_factory=list, init=False)
+    _seen_fingerprints: Set[str] = field(default_factory=set, init=False)
+
+    _last_page_start: Dict[str, int] = field(default_factory=dict, init=False)
+    _lastpage_lock:   asyncio.Lock   = field(default=None, init=False, repr=False)
+
+    @property
+    def lastpage_lock(self) -> asyncio.Lock:
+        if self._lastpage_lock is None:
+            self._lastpage_lock = asyncio.Lock()
+        return self._lastpage_lock
+
+    def is_past_last_page(self, base_url: str, start: int) -> bool:
+        limit = self._last_page_start.get(base_url)
+        return limit is not None and start > limit
+
+    async def mark_last_page(self, base_url: str, start: int) -> bool:
+        """Record `start` as the last real page for base_url. Returns True if this is a new/tighter boundary."""
+        async with self.lastpage_lock:
+            current = self._last_page_start.get(base_url)
+            if current is None or start < current:
+                self._last_page_start[base_url] = start
+                return True
+            return False
+    # Locks
+    _lock:            asyncio.Lock = field(default=None, init=False, repr=False)
+    _context_lock:    asyncio.Lock = field(default=None, init=False, repr=False)
+    _uid_buffer_lock: asyncio.Lock = field(default=None, init=False, repr=False)
+    _login_wall_event: asyncio.Event = field(default=None, init=False, repr=False)  
+
+    _context_requests: Dict[int, int] = field(default_factory=dict, init=False)
+    _uid_buffer:       List[str]      = field(default_factory=list, init=False)
+    _saved_account_ids: Set[int]      = field(default_factory=set, init=False)
+
+    @property
+    def ai_matching_enabled(self) -> bool:
+        return bool(self.about_me and self.about_me.strip())
+
+    @property
+    def tracking_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    @property
+    def context_lock(self) -> asyncio.Lock:
+        if self._context_lock is None:
+            self._context_lock = asyncio.Lock()
+        return self._context_lock
+
+    @property
+    def uid_lock(self) -> asyncio.Lock:
+        if self._uid_buffer_lock is None:
+            self._uid_buffer_lock = asyncio.Lock()
+        return self._uid_buffer_lock
+    @property
+    def login_wall_event(self) -> asyncio.Event:
+        if self._login_wall_event is None:
+            self._login_wall_event = asyncio.Event()
+        return self._login_wall_event
+
+    def signal_login_wall(self) -> None:
+        """Call this the instant Indeed shows the sign-in wall — stops all workers."""
+        self.login_wall_event.set()
+
+    @property
+    def is_login_wall(self) -> bool:
+        return self._login_wall_event is not None and self._login_wall_event.is_set()
+    
+    async def buffer_uids(self, uids: list) -> None:
+        async with self.uid_lock:
+            self._uid_buffer.extend(uids)
+
+    async def flush_uid_buffer(self) -> list:
+        async with self.uid_lock:
+            uids = self._uid_buffer.copy()
+            self._uid_buffer.clear()
+            return uids
+
+    async def try_add_job(self, uid: str, company_name: str) -> bool:
+        async with self.tracking_lock:
+            if self.extracted_jobs_counter >= self.max_jobs:
+                return False
+            if uid in self.processed_uids:
+                return False
+            if self.new_processed_company_jobs.count(company_name) >= self.per_company_jobs:
+                return False
+            if company_name in self.ignored_companies_seen:
+                self.processed_uids.add(uid)
+                return False
+            matched_rule = next(
+                (ic for ic in self.ignore_companies
+                 if re.search(r'\b' + re.escape(ic) + r'\b', company_name, re.IGNORECASE)),
+                None,
+            )
+            if matched_rule:
+                self.ignored_companies_seen.add(company_name)
+                self.processed_uids.add(uid)
+                return False
+            self.processed_uids.add(uid)
+            self.new_processed_company_jobs.append(company_name)
+            return True
+
+    def is_duplicate_fingerprint(self, position: str, company: str) -> bool:
+        """
+        Returns True if this (position, company) pair has already been saved.
+        Only active when save_unique_only=True.
+        """
+        if not self.save_unique_only:
+            return False
+        fp = f"{position.strip().lower()}|||{company.strip().lower()}"
+        if fp in self._seen_fingerprints:
+            return True
+        self._seen_fingerprints.add(fp)
+        return False
+
+    async def confirm_filtered_jobs(
+        self, links: list, percentages: list
+    ) -> tuple[list, list]:
+        async with self.tracking_lock:
+            remaining      = self.max_jobs - self.extracted_jobs_counter
+            if remaining <= 0:
+                return [], []
+            accepted_count = min(len(links), remaining)
+            self.extracted_jobs_counter += accepted_count
+            return links[:accepted_count], percentages[:accepted_count]
+
+    async def release_slot(self) -> None:
+        """
+        Call when an accepted job permanently fails to be saved (expired,
+        removed, filtered by ignore_related, extraction error) WITHOUT
+        being re-queued — frees its counted slot so another pending job
+        can fill the max_jobs quota instead of it being lost.
+        """
+        async with self.tracking_lock:
+            if self.extracted_jobs_counter > 0:
+                self.extracted_jobs_counter -= 1
+
+    async def is_limit_reached(self) -> bool:
+        async with self.tracking_lock:
+            return self.extracted_jobs_counter >= self.max_jobs
+
+    def total_queued(self) -> int:
+        return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config builder
+# ─────────────────────────────────────────────────────────────────────────────
+def load_scraper_config(
+    url_list:               list[str],
+    about_me:               str,
+    ignore_companies_raw:   str,
+    ignore_related_raw:     str,
+    max_jobs:               int,
+    per_company_jobs:       int,
+    min_match_percentage:   int,
+    concurrency:            int,
+    processed_uids:         set[str],
+    account_cookies:        list[dict],
+    search_keywords:        list[str],
+    search_location:        str,
+    search_country:         str,
+    scrape_company_details: bool,
+    save_unique_only:       bool,
+    follow_apply_redirect:  bool,
+    skip_expired_jobs:      bool,
+    skip_ignore_related_jobs:  bool,
+    
+    proxies:                list[str] | None = None,
+    proxies_path:           "Path | None" = None,
+    proxies_state:          "Path | None" = None,
+    google_sheet_url:       str  = "",
+    sheet_name:             str  = "Indeed Jobs",
+    headless:               bool = True,
+) -> ScraperConfig:
+    ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
+    ignore_related   = [kw.strip().lower() for kw in ignore_related_raw.splitlines() if kw.strip()]
+
+    return ScraperConfig(
+        about_me=about_me,
+        ignore_companies=ignore_companies,
+        ignore_related=ignore_related,
+        concurrency=concurrency,
+        url_queue=url_list,
+        max_jobs=max_jobs,
+        per_company_jobs=per_company_jobs,
+        min_match_percentage=min_match_percentage,
+        search_keywords=search_keywords,
+        search_location=search_location,
+        search_country=search_country,
+        scrape_company_details=scrape_company_details,
+        save_unique_only=save_unique_only,
+        follow_apply_redirect=follow_apply_redirect,
+        skip_expired_jobs=skip_expired_jobs,
+        skip_ignore_related_jobs=skip_ignore_related_jobs,
+        google_sheet_url=google_sheet_url,
+        sheet_name=sheet_name,
+        headless=headless,
+        proxies=proxies or [],
+        proxies_path=proxies_path,
+        proxies_state=proxies_state,
+        processed_uids=processed_uids,
+        account_cookies=account_cookies,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging helpers
+# ─────────────────────────────────────────────────────────────────────────────
+async def log(level: str, message: str) -> None:
+    fn = getattr(Actor.log, level, Actor.log.info)
+    fn(message)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UID persistence
+# ─────────────────────────────────────────────────────────────────────────────
+_KV_UID_KEY = "processed_uids"
+
+
+async def save_processed_uids(uids: list) -> None:
+    if not uids:
+        return
+    try:
+        kv       = await Actor.open_key_value_store()
+        existing = await kv.get_value(_KV_UID_KEY) or []
+        merged   = list(set(existing) | set(uids))
+        await kv.set_value(_KV_UID_KEY, merged)
+        Actor.log.info(f"💾 Saved {len(uids)} new UIDs (total: {len(merged)})")
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not save UIDs: {e}")
+
+
+async def update_processed_uids(uids: list) -> None:
+    await save_processed_uids(uids)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data push
+# ─────────────────────────────────────────────────────────────────────────────
+async def push_job_data(data: dict, config: ScraperConfig) -> None:
+    try:
+        await Actor.push_data(data)
+        config._saved_jobs.append(data)
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Failed to push data: {e}")
+
+
+def get_proxy(config: ScraperConfig):
+    try:
+
+        state_file = Path(config.proxies_state)
+
+        proxies_start_number = 0
+        if state_file.exists():
+            with open(state_file, "r") as f:
+                proxies_start_number = json.load(f).get("proxies_start_number", 0)
+
+        # Read proxy file
+        with open(config.proxies_path, "r") as f:
+            all_proxies = [line.strip() for line in f if line.strip()]
+
+        # No proxies anywhere
+        if not all_proxies:
+            Actor.log.warning("No proxies available.")
+            return []
+
+        index = proxies_start_number % len(all_proxies)
+        proxy = all_proxies[index].split(":")
+
+        # Save next index
+        new_start = (index + 1) % len(all_proxies)
+        with open(state_file, "w") as f:
+            json.dump({"proxies_start_number": new_start}, f)
+
+        return proxy
+    except Exception as e:
+        Actor.log.warning(f"Problem to get proxy: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser context creation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_timezone_from_ip(ip: str | None = None) -> str:
+    try:
+        url = f"http://ip-api.com/json/{ip}" if ip else "http://ip-api.com/json"
+        data = requests.get(url, timeout=5).json()
+        if data.get("status") == "success":
+            tz = data.get("timezone", "UTC")
+            Actor.log.info(f"Timezone: {tz}")
+            return tz
+    except Exception as e:
+        Actor.log.warning(f"Could not fetch timezone: {e}")
+    return "UTC"
+
+def get_proxy_public_ip(ip: str, port: str, user: str, pwd: str) -> str:
+    try:
+        r = requests.get(
+            "https://api.ipify.org",
+            proxies={"https": f"http://{user}:{pwd}@{ip}:{port}"},
+            timeout=8,
+        )
+        addr = r.text.strip()
+        Actor.log.info(f"Proxy public IP: {addr}")
+        return addr
+    except Exception as e:
+        Actor.log.inf(f" Could not get proxy public IP: {e}")
+    return ip
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DataImpulse residential proxy — country/city targeting from user's search
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Indeed's country codes don't always match what proxy providers expect
+# (e.g. Indeed uses "uk", most providers want ISO "gb"). Extend as needed.
+_INDEED_TO_PROXY_COUNTRY = {
+    "uk": "gb",
+}
+
+def _slugify_city(location: str) -> str:
+    """'New York, NY' -> 'newyork' — best-effort city token for proxy targeting."""
+    if not location:
+        return ""
+    city_part = location.split(",")[0].strip()
+    return re.sub(r'[^a-z]', '', city_part.lower())
+
+
+def build_dataimpulse_proxy(config: "ScraperConfig", session_id: str | None = None) -> dict | None:
+    """
+    Build a DataImpulse proxy dict targeted at the SAME country/location the
+    user picked for the Indeed search (config.search_country / search_location),
+    so the proxy's geography matches what's being searched.
+
+    A fresh session_id gives a fresh residential IP — pass None to get a new
+    random one (used for context rotation), or pass the same value again to
+    keep the same IP "sticky" across requests.
+    """
+    login    = os.getenv("DATAIMPULSE_LOGIN", "").strip()
+    password = os.getenv("DATAIMPULSE_PASSWORD", "").strip()
+    host     = os.getenv("DATAIMPULSE_HOST", "gw.dataimpulse.com").strip()
+    port     = os.getenv("DATAIMPULSE_PORT", "823").strip()
+
+    if not login or not password:
+        return None
+
+    raw_country = (config.search_country or "us").strip().lower()
+    country     = _INDEED_TO_PROXY_COUNTRY.get(raw_country, raw_country)
+    city        = _slugify_city(config.search_location)
+    sid         = session_id or str(random.randint(100000, 999999))
+
+    proxy_login = f"{login}__cr.{country}"
+    if city:
+        proxy_login += f"__city.{city}"
+    proxy_login += f"__sid.{sid}"
+
+    return {
+        "server":   f"http://{host}:{port}",
+        "username": proxy_login,
+        "password": password,
+    }
+
+
+def get_public_ip_via_proxy(proxy_dict: dict) -> str:
+    """Verify a proxy dict actually works and log the exit IP it gives us."""
+    try:
+        server = proxy_dict["server"].replace("http://", "")
+        proxy_url = f"http://{proxy_dict['username']}:{proxy_dict['password']}@{server}"
+        r = requests.get("https://api.ipify.org", proxies={"https": proxy_url}, timeout=10)
+        ip = r.text.strip()
+        Actor.log.info(f"🌐 Proxy public IP: {ip}")
+        return ip
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not verify proxy IP: {e}")
+        return ""
+def get_proxy_info(proxy_dict):
+    try:
+        proxy_url = f"http://{proxy_dict['username']}:{proxy_dict['password']}@" \
+                    f"{proxy_dict['server'].replace('http://','')}"
+        proxies = {"http": proxy_url, "https": proxy_url}
+        ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=10).text.strip()
+        tz_data = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
+        tz = tz_data.get("timezone", "UTC")
+        Actor.log.info(f"Proxy IP: {ip}, timezone: {tz}")
+        return ip, tz
+    except Exception as e:
+        Actor.log.warning(f"Could not get proxy timezone: {e}")
+        return None, "UTC"
+
+def get_local_ip_info():
+    try:
+        ip = requests.get("https://api.ipify.org", timeout=10).text.strip()
+        tz_data = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
+        tz = tz_data.get("timezone", "UTC")
+        Actor.log.info(f"Local IP: {ip}, timezone: {tz}")
+        return ip, tz
+    except Exception as e:
+        Actor.log.warning(f"Could not get local timezone: {e}")
+        return None, "UTC"
+
+
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
+
+async def create_context(config: ScraperConfig, worker_id: int):
+    # ── Decide whether to use proxy ─────────────────────────────────────
+    proxy_dict = build_dataimpulse_proxy(config, session_id=str(random.randint(100000, 999999)))
+
+    # --- Timezone & public IP detection ---
+    if proxy_dict:
+        public_ip, timezone = get_proxy_info(proxy_dict)
+    else:
+        # No proxy → use the machine’s own IP/timezone
+        public_ip, timezone = get_local_ip_info()
+
+    # ── Fingerprint & Scripts ───────────────────────────────────────────
+    fingerprint = fg_generator.generate()
+    script = fg_generator.build_js_script(fingerprint)
+
+    # ── Fingerprint & Scripts ───────────────────────────────────────────
+    fingerprint = fg_generator.generate()
+    script = fg_generator.build_js_script(fingerprint)
+
+    # print(f"[INFO] Fingerprint ID : {fingerprint['fingerprint_id']}")
+    # print(f"[INFO] User-Agent     : {fingerprint['user_agent']}")
+    # print(f"[INFO] Platform       : {fingerprint['platform']}")
+
+    pw_cm = Stealth().use_async(async_playwright())
+    pw = await pw_cm.__aenter__()
+
+    context_options = {
+        "user_data_dir": f"browserdata{worker_id}",
+        "channel": "chrome",
+        "headless": config.headless,
+        "timezone_id": timezone,
+        "no_viewport": True,
+        "user_agent": fingerprint["user_agent"],
+        "extra_http_headers": {
+            "Accept-Language": fingerprint["headers"]["Accept-Language"],
+        },
+        "proxy": {
+            "server": proxy_dict["server"],
+            "username": proxy_dict["username"],
+            "password": proxy_dict["password"],
+        },
+    }
+
+    context = await pw.chromium.launch_persistent_context(**context_options)
+    await context.add_init_script(script)
+
+    if public_ip:
+        await context.add_init_script(_webrtc_ip_spoof_script(public_ip))
+
+    account_cookies = config.account_cookies
+    if isinstance(account_cookies, dict):
+        account_cookies = account_cookies.get("prefill", [])
+    if account_cookies:
+        await context.add_cookies(account_cookies)
+
+    # keep the Playwright handle attached so it can be closed alongside the context
+    context._pw_cm = pw_cm
+    return context
+
+async def close_context_and_playwright(context) -> None:
+    """Always use this instead of context.close() directly."""
+    try:
+        await context.close()
+    except Exception:
+        pass
+    pw_cm = getattr(context, "_pw_cm", None)
+    if pw_cm is not None:
+        try:
+            await pw_cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+#─────────────────────────────────────────────────────────────────────────────
+# Human-behaviour simulation
+# ─────────────────────────────────────────────────────────────────────────────
+async def simulate_human_behavior(page: Page) -> None:
+    await asyncio.sleep(random.uniform(0.5, 1.0))
+    for _ in range(random.randint(1, 2)):
+        await page.mouse.wheel(0, random.randint(100, 200))
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+    await page.mouse.move(random.randint(0, 800), random.randint(0, 600), steps=random.randint(5, 10))
+    await asyncio.sleep(random.uniform(0.5, 1.0))
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await asyncio.sleep(random.uniform(1.0, 2.0))
+    await page.mouse.move(random.randint(0, 800), random.randint(0, 600), steps=random.randint(5, 10))
+    await asyncio.sleep(random.uniform(0.5, 1.0))
+
+
+# async def simulate_human_behavior(page: Page) -> None:
+#     await asyncio.sleep(random.uniform(0.2, 0.4))
+
+#     # Small scroll
+#     await page.mouse.wheel(0, random.randint(100, 200))
+#     await asyncio.sleep(random.uniform(0.2, 0.4))
+
+#     # Random mouse movement
+#     await page.mouse.move(
+#         random.randint(0, 800),
+#         random.randint(0, 600),
+#         steps=random.randint(5, 10),
+#     )
+#     await asyncio.sleep(random.uniform(0.2, 0.4))
+
+#     # Scroll to bottom
+#     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+#     await asyncio.sleep(random.uniform(0.5, 1.0))
+
+#     # Final mouse movement
+#     await page.mouse.move(
+#         random.randint(0, 800),
+#         random.randint(0, 600),
+#         steps=random.randint(5, 10),
+#     )
+#     await asyncio.sleep(random.uniform(0.2, 0.4))
+
+
+
+def expand_to_paginated_urls(
+    url_list: list[str],
+    pages_per_query: int = 50,
+    page_size: int = 10,
+) -> list[tuple[int, str]]:
+    """
+    Pre-generate `pages_per_query` pagination URLs for every seed URL up
+    front, before a single request is sent. Thin wrapper around
+    extractor.build_fixed_pagination_urls so main.py only needs one import
+    from helpers.
+    """
+    expanded: list[tuple[int, str]] = []
+    for url in url_list:
+        expanded.extend(build_fixed_pagination_urls(url, pages=pages_per_query, page_size=page_size))
+    return expanded
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pagination — fixed upfront generation + end-of-results detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_fixed_pagination_urls(
+    base_url: str,
+    pages: int = 50,
+    page_size: int = 10,
+) -> list[tuple[int, str]]:
+    """
+    Build `pages` pagination URLs for a single seed URL up front — start=0,
+    start=10, ... start=(pages-1)*page_size — with no request sent and no
+    dependency on totalJobCount. Replaces the old "fetch page 1, read the
+    real total, then generate pagination" flow.
+    """
+    # strip any start= the caller may already have on the URL so we always
+    # build a clean 0..N-1 ladder
+    clean_base = re.sub(r'([?&])start=\d+&?', r'\1', base_url).rstrip('&?')
+
+    urls: list[tuple[int, str]] = []
+    for i in range(pages):
+        start = i * page_size
+        if start == 0:
+            urls.append((0, clean_base))
+        else:
+            sep = '&' if '?' in clean_base else '?'
+            urls.append((start, f"{clean_base}{sep}start={start}"))
+    return urls
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page navigation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+async def open_jobs_search_page(
+    page: Page, start: int, job_search_url: str, url_queue: asyncio.Queue, config: ScraperConfig
+) -> bool:
+    for attempt in range(3):
+        try:
+            await page.goto(job_search_url, wait_until="load")
+            page_title = await page.title()
+            if "sign in | indeed accounts" in page_title.lower():
+                Actor.log.warning(
+                    f"🛑 Indeed redirected to the sign-in page — terminating scrape. "
+                    f"Update cookies: {page.url}"
+                )
+                config.signal_login_wall()
+                clear_queue(url_queue)
+                return False
+            return True
+        except PlaywrightTimeoutError:
+            if attempt < 2:
+                Actor.log.info(f"⚠️ Attempt {attempt + 1} failed, retrying…")
+            else:
+                Actor.log.warning(f"❌ All attempts failed for {job_search_url}, re-queued")
+                await url_queue.put((start, job_search_url))
+                await asyncio.sleep(random.uniform(4, 8))
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue helper
+# ─────────────────────────────────────────────────────────────────────────────
+def clear_queue(q: asyncio.Queue) -> None:
+    while not q.empty():
+        try:
+            q.get_nowait()
+            q.task_done()
+        except asyncio.QueueEmpty:
+            break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job info extractors
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_company(page):
+    try:
+        await page.wait_for_selector('div[data-company-name="true"]', timeout=8000)
+    except Exception:
+        pass
+    for sel in [
+        'div[data-company-name="true"] a',
+        '[data-testid="inlineHeader-companyName"] span a',
+        'div[data-company-name="true"]',
+        '[data-testid="inlineHeader-companyName"]',
+    ]:
+        try:
+            element = await page.query_selector(sel)
+            if element:
+                text = (await element.inner_text()).strip().split("\n")[0].strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return None
+
+async def _get_company_indeed_url(page: Page) -> str:
+    """Return the href of the company's Indeed profile link if present."""
+    try:
+        link = page.locator(
+            '[data-testid="inlineHeader-companyName"] a, '
+            'div[data-company-name="true"] a'
+        ).first
+        if await link.count() > 0:
+            href = await link.get_attribute("href")
+            if href:
+                # Make absolute
+                if href.startswith("/"):
+                    return f"https://www.indeed.com{href}"
+                return href
+    except Exception:
+        pass
+    return ""
+
+
+import re
+
+async def _extract_posted_date(
+    page: Page,
+    date_on_indeed: int | None = None,
+) -> tuple[str, str]:
+    """
+    Returns:
+        postedAt            -> "12 days ago"
+        postingDateParsed   -> "2026-06-18T15:58:53.616Z"
+    """
+    posted_at = ""
+    posting_date_parsed = ""
+
+    try:
+        content = await page.content()
+
+        # Fall back to pulling the epoch-ms timestamp from the embedded JSON
+        if not date_on_indeed:
+            match = re.search(r'"datePublished":(\d+)', content)
+            if match:
+                date_on_indeed = int(match.group(1))
+
+        if date_on_indeed:
+            posting_date_parsed = (
+                datetime.fromtimestamp(date_on_indeed / 1000, tz=timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+
+        # Relative-age text, e.g. hiringInsightsModel.age in the embedded JSON
+        age_match = re.search(r'"age":"([^"]+)"', content)
+        if age_match:
+            posted_at = age_match.group(1)
+
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Failed to extract posted date: {e}")
+
+    return posted_at, posting_date_parsed
+
+async def extract_salary_job_types(page: Page):
+    container = page.locator("#salaryInfoAndJobType")
+    salary    = ""
+    job_types = []
+
+    if await container.count() > 0:
+        spans             = container.locator("span")
+        count             = await spans.count()
+        delimiter_pattern = re.compile(r'\s*[,\/·]\s*|\s+-\s+')
+
+        for i in range(count):
+            text = (await spans.nth(i).inner_text()).strip()
+            if not text:
+                continue
+            if any(sym in text for sym in ("$", "£", "€")) or "year" in text.lower():
+                salary = text
+            else:
+                tokens = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
+                job_types.extend(tokens)
+
+        if count == 1 and not salary:
+            text      = await spans.first.inner_text()
+            job_types = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
+
+    return (salary, job_types)
+
+
+async def extract_rating_and_reviews(page: Page) -> dict:
+    review_block = page.locator(".jobsearch-CompanyReview").first
+    if await review_block.count() == 0:
+        return {"rating": 0.0, "review_count": 0}
+
+    rating     = 0.0
+    rating_div = review_block.locator('div[role="img"]').first
+    if await rating_div.count() > 0:
+        aria_label = await rating_div.get_attribute("aria-label")
+        if aria_label:
+            m = re.search(r'(\d+\.?\d*)', aria_label)
+            if m:
+                rating = float(m.group(1))
+
+    review_count = 0
+    count_span   = review_block.locator("span.css-1t3rggk").first
+    if await count_span.count() > 0:
+        m = re.search(r'(\d+)', (await count_span.inner_text()).strip())
+        if m:
+            review_count = int(m.group(1))
+
+    return {"rating": rating, "review_count": review_count}
+
+
+async def extract_external_apply_link(page: Page) -> str:
+    btn = page.locator('button[aria-label*="Apply on company site"]').first
+    if await btn.count() > 0:
+        href = await btn.get_attribute("href")
+        return href or ""
+    return ""
+
+
+async def resolve_redirect(page: Page, url: str) -> str:
+    """
+    Follow redirects on an external apply link and return the final URL.
+    Uses a lightweight fetch (no rendering) to avoid opening a full page.
+    """
+    if not url:
+        return ""
+    try:
+        result = await page.evaluate(
+            """async (url) => {
+                try {
+                    const resp = await fetch(url, {method: 'HEAD', redirect: 'follow'});
+                    return resp.url;
+                } catch(e) {
+                    return url;
+                }
+            }""",
+            url,
+        )
+        return result or url
+    except Exception:
+        return url
+
+
+async def scrape_company_details(page: Page, company_name: str) -> dict:
+    """
+    Visit the Indeed company page and extract size, industry, and description.
+    Returns a dict with company_size, company_industry, company_description.
+    Falls back to empty strings on any error.
+    """
+    result = {"company_size": "", "company_industry": "", "company_description": ""}
+    try:
+        search_slug = re.sub(r'\s+', '-', company_name.strip().lower())
+        # Indeed company pages follow /cmp/<slug>
+        company_url = f"https://www.indeed.com/cmp/{search_slug}"
+        await page.goto(company_url, wait_until="load", timeout=15000)
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        # Company size
+        size_loc = page.locator('[data-testid="companyInfo-employee-count"], [data-tn-element="company-employee-count"]').first
+        if await size_loc.count() > 0:
+            result["company_size"] = (await size_loc.inner_text()).strip()
+
+        # Industry
+        industry_loc = page.locator('[data-testid="companyInfo-industry"], [data-tn-element="company-industry"]').first
+        if await industry_loc.count() > 0:
+            result["company_industry"] = (await industry_loc.inner_text()).strip()
+
+        # Description (first paragraph)
+        desc_loc = page.locator('[data-testid="aboutSection"] p, .cmp-AboutSection p').first
+        if await desc_loc.count() > 0:
+            result["company_description"] = (await desc_loc.inner_text()).strip()[:500]
+
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Company detail scrape failed for '{company_name}': {e}")
+
+    return result
+
+
+def is_ignored(company_name: str, ignore_companies: list[str]) -> tuple[bool, str]:
+    for ic in ignore_companies:
+        if re.search(r'\b' + re.escape(ic) + r'\b', company_name, re.IGNORECASE):
+            return True, ic
+    return False, ""
+
+
+def check_remote_status(description: str, location: str = "", remote_badge: str = "") -> str:
+    badge = remote_badge.strip().lower()
+    if badge == "remote":
+        return "Remote"
+    if "hybrid" in badge:
+        return "Hybrid"
+    if badge in ("in-person", "on-site", "on site"):
+        return "In-Person"
+
+    text = (description + " " + location).lower()
+
+    non_remote_patterns = [
+        r'not a remote position', r'not a remote role', r'this is not a remote',
+        r'must work in the office', r'work location:\s*in[- ]person',
+        r'work remotely[:\s]*no', r'no remote work', r'not eligible for remote',
+        r'fully on[- ]site', r'this is a fully on[- ]site',
+        r'works full[- ]time on[- ]site', r'on[- ]site only',
+        r'office[- ]based', r'in[- ]office required', r'must be.*on[- ]site',
+        r'required to (work|report) (in|to) (the )?office',
+    ]
+    hybrid_patterns = [
+        r'\bhybrid\b', r'hybrid remote', r'hybrid work', r'hybrid schedule',
+        r'part[- ]time remote',
+        r'\d+\s*days?\s*(per week\s*)?(in|from)\s*(the\s*)?office',
+        r'\d+\s*days?\s*(a|per)\s*week.*on[- ]?site',
+        r'remote.*after.*training', r'may be available.*remote',
+        r'blending.*office day', r'#li-hybrid', r'2[- ]3 days onsite',
+        r'split.*between.*office.*home', r'flexible.*in[- ]office',
+    ]
+    remote_patterns = [
+        r'\bfully remote\b', r'\b100% remote\b', r'work from home',
+        r'work location:\s*remote', r'\bremote position\b', r'\bremote role\b',
+        r'\bremote-first\b', r'work remotely[:\s]*yes', r'this is a remote',
+        r'#li-remote', r'remote.*anywhere', r'work from anywhere',
+        r'permanently remote', r'telework',
+    ]
+
+    if any(re.search(p, text) for p in non_remote_patterns):
+        return "In-Person"
+    if any(re.search(p, text) for p in hybrid_patterns):
+        return "Hybrid"
+    if any(re.search(p, text) for p in remote_patterns):
+        return "Remote"
+    return " "
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared batch flush
+# ─────────────────────────────────────────────────────────────────────────────
+async def flush_batch(
+    config: ScraperConfig,
+    batch_positions: list[str],
+    batch_links:     list[str],
+    batch_uids:      list[str],
+    filter_queue:    asyncio.Queue,
+) -> None:
+    percentages = await get_match_percentages(config.about_me, batch_positions)
+    threshold   = config.min_match_percentage if config.ai_matching_enabled else 0
+
+    passed_links: list[str]   = []
+    passed_pcts:  list[float] = []
+    for link, pct in zip(batch_links, percentages):
+        if pct >= threshold:
+            passed_links.append(link)
+            passed_pcts.append(pct)
+
+    if passed_links:
+        accepted_links, accepted_pcts = await config.confirm_filtered_jobs(passed_links, passed_pcts)
+        for link, pct in zip(accepted_links, accepted_pcts):
+            await filter_queue.put((link, pct))
+        if accepted_links:
+            Actor.log.info(
+                f"✅ Scorer accepted {len(accepted_links)}/{len(passed_links)} jobs"
+                f"  |  total: {config.extracted_jobs_counter}/{config.max_jobs}"
+            )
+
+    await config.buffer_uids(batch_uids)
+    if len(config._uid_buffer) >= ScraperSettings.UID_FLUSH_SIZE:
+        uids_to_save = await config.flush_uid_buffer()
+        await update_processed_uids(uids_to_save)
+
+
+async def _flush_shared_batch(
+    config: ScraperConfig,
+    batch_positions: list,
+    batch_links:     list,
+    batch_uids:      list,
+    batch_lock:      asyncio.Lock,
+    filter_queue:    asyncio.Queue,
+) -> None:
+    async with batch_lock:
+        if not batch_positions:
+            return
+        snap_positions = batch_positions.copy()
+        snap_links     = batch_links.copy()
+        snap_uids      = batch_uids.copy()
+        batch_positions.clear()
+        batch_links.clear()
+        batch_uids.clear()
+    await flush_batch(config, snap_positions, snap_links, snap_uids, filter_queue)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Status logger
+# ─────────────────────────────────────────────────────────────────────────────
+async def status_logger(config: ScraperConfig, stop_event: asyncio.Event) -> None:
+    BAR_LEN, last_saved, ticks_since_log = 20, -1, 0
+    HEARTBEAT_TICKS = 30
+
+    while not stop_event.is_set():
+        saved = config.extracted_jobs_counter
+        ticks_since_log += 1
+
+        if saved != last_saved or ticks_since_log >= HEARTBEAT_TICKS:
+            pct    = saved / config.max_jobs if config.max_jobs else 0
+            filled = int(pct * BAR_LEN)
+            bar    = "█" * filled + "░" * (BAR_LEN - filled)
+            Actor.log.info(
+                f"📊 [{bar}] {pct * 100:.1f}%  |  ✅ saved: {saved}/{config.max_jobs}"
+            )
+            last_saved, ticks_since_log = saved, 0
+
+        await asyncio.sleep(2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Startup info
+# ─────────────────────────────────────────────────────────────────────────────
+async def showstartinginfo(config: ScraperConfig) -> None:
+    Actor.log.info("=" * 80)
+    Actor.log.info(f"🎯 Max jobs:            {config.max_jobs}")
+    Actor.log.info(f"🔗 Search URLs:         {len(config.url_queue)}")
+    if config.search_keywords:
+        Actor.log.info(f"🔑 Keywords:            {config.search_keywords}")
+        Actor.log.info(f"📍 Location:            '{config.search_location}' | country={config.search_country}")
+    Actor.log.info(f"⚡ Concurrency:         {config.concurrency}")
+    Actor.log.info(f"🏢 Per company:         {config.per_company_jobs}")
+    if config.ai_matching_enabled:
+        Actor.log.info(f"🤖 AI matching:         ON  |  min score: {config.min_match_percentage}%")
+    else:
+        Actor.log.info("🤖 AI matching:         OFF (all jobs collected)")
+    Actor.log.info(f"🏭 Company details:     {'ON' if config.scrape_company_details else 'OFF'}")
+    Actor.log.info(f"🔁 Unique jobs only:    {'ON' if config.save_unique_only else 'OFF'}")
+    Actor.log.info(f"🔗 Follow apply link:   {'ON' if config.follow_apply_redirect else 'OFF'}")
+    Actor.log.info(f"🔗 Skip expired jobs:   {'ON' if config.skip_expired_jobs else 'OFF'}")
+    Actor.log.info(f"🔗 Skip ignore related jobs:{'ON' if config.skip_ignore_related_jobs else 'OFF'}")
+    Actor.log.info(f"🚫 Ignore companies:    {len(config.ignore_companies)}")
+    Actor.log.info(f"🚫 Ignore related:      {config.ignore_related}")
+    Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")
+    Actor.log.info(f"🍪 Cookies:             {'provided' if config.account_cookies else 'not provided'}")
+    Actor.log.info(f"👻 Headless:            {config.headless}")
+    Actor.log.info("=" * 80)
+    Actor.log.info("🏃 Starting scraper execution…")
+
+
+
+
+# ── WebRTC IP spoof script (proxy mode only) ──────────────────────────────────
+def _webrtc_ip_spoof_script(proxy_public_ip: str) -> str:
+    return f"""
+(() => {{
+  const FAKE_IP = "{proxy_public_ip}";
+  const OrigRTC = window.RTCPeerConnection;
+  if (!OrigRTC) return;
+
+  window.RTCPeerConnection = function (config, constraints) {{
+    if (config && config.iceServers) config.iceServers = [];
+    const pc = new OrigRTC(config, constraints);
+    const _add = pc.addEventListener.bind(pc);
+    pc.addEventListener = function (type, handler, ...rest) {{
+      if (type !== 'icecandidate') return _add(type, handler, ...rest);
+      _add(type, (event) => {{
+        if (!event.candidate || !event.candidate.candidate) {{
+          handler && handler(event);
+          return;
+        }}
+        const spoofed = event.candidate.candidate.replace(
+          /\\b(?:\\d{{1,3}}\\.?){{4}}\\b/g, FAKE_IP
+        );
+        const fakeCandidate = Object.create(event.candidate);
+        Object.defineProperty(fakeCandidate, 'candidate', {{ get: () => spoofed }});
+        const fakeEvent = Object.create(event);
+        Object.defineProperty(fakeEvent, 'candidate', {{ get: () => fakeCandidate }});
+        handler && handler(fakeEvent);
+      }}, ...rest);
+    }};
+    return pc;
+  }};
+  Object.assign(window.RTCPeerConnection, OrigRTC);
+  window.RTCPeerConnection.prototype = OrigRTC.prototype;
+  Object.defineProperty(window.RTCPeerConnection, 'name', {{ value: 'RTCPeerConnection' }});
+}})();
+"""
+
+
+def _base_url_of(url: str) -> str:
+    """Strip the start= param to get the seed/base URL a pagination URL belongs to."""
+    return re.sub(r'([?&])start=\d+&?', r'\1', url).rstrip('&?')
+
+
+async def has_next_page(page: Page) -> bool:
+    """True if Indeed's pagination nav shows a 'next page' link."""
+    try:
+        next_link = await page.query_selector('[data-testid="pagination-page-next"]')
+        return next_link is not None
+    except Exception:
+        return True  # if we can't tell, assume there's more (fail open)
+
+
+async def purge_queue_beyond(url_queue: asyncio.Queue, base_url: str, last_start: int) -> int:
+    """Drop queued pagination URLs for this base_url whose start > last_start."""
+    removed = 0
+    keepers = []
+    while True:
+        try:
+            item = url_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        url_queue.task_done()
+        start, url = item
+        if _base_url_of(url) == base_url and start > last_start:
+            removed += 1
+        else:
+            keepers.append(item)
+    for item in keepers:
+        await url_queue.put(item)
+    return removed
+
+
+
+_INDEED_JUNK_PARAMS = {
+    "ts", "pts", "from", "rq", "rsIdx", "newcount",
+    "vjk", "advn", "sjdu", "sxu",
+}
+
+def sanitize_indeed_url(url: str) -> str:
+    """
+    Strip Indeed's client-side tracking/session params from a pasted
+    browser URL, keeping only the params that matter for a clean search
+    (q, l, fromage if it's a valid numeric value, radius, etc).
+    """
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+
+    cleaned = {}
+    for key, values in params.items():
+        if key in _INDEED_JUNK_PARAMS:
+            continue
+        if key == "fromage" and not values[0].isdigit():
+            continue  # drop invalid non-numeric fromage like "last"
+        cleaned[key] = values[0]
+
+    query = urlencode(cleaned)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{query}" if query else f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+"""
+src/gsheet.py
+Google Sheets upload — PUBLIC URL mode.
+The sheet must be shared as "Anyone with the link can edit".
+No service account credentials required from the user.
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Any
+
+import gspread
+import pytz
+from google.auth.credentials import AnonymousCredentials
+
+
+def _extract_workbook_id(link: str) -> str | None:
+    match = re.search(r"/d/([a-zA-Z0-9-_]+)", link)
+    if not match:
+        return None
+    wb_id = match.group(1)
+    return wb_id if len(wb_id) >= 33 else None
+
+
+async def upload_to_google_sheet(
+    link: str,
+    sheet_name: str,
+    jobs: list[dict],
+    log: Any,
+) -> None:
+    """
+    Upload scraped jobs to a publicly-editable Google Sheet.
+
+    Requirements for the user:
+      1. Open the Google Sheet.
+      2. Click Share → Change to "Anyone with the link" → set role to "Editor".
+      3. Copy the sheet URL and paste it into the actor input.
+
+    No credentials dict, no service account email sharing needed.
+    """
+    wb_id = _extract_workbook_id(link)
+    if not wb_id:
+        log.error(f"❌ Invalid Google Sheet URL — cannot extract workbook ID: {link}")
+        return
+
+    # ── Connect anonymously (works only for sheets shared as "anyone can edit") ──
+    try:
+        # gspread supports anonymous access for publicly editable sheets
+        client = gspread.Client(auth=None)
+        client.session = gspread.auth.local_server_flow   # not used, replaced below
+
+        # Use requests-based anonymous client
+        import requests
+        from gspread import Client
+        from gspread.utils import ExceptionType
+
+        session = requests.Session()
+
+        # Build a minimal gspread client that uses no OAuth
+        client = Client(auth=AnonymousCredentials(), session=session)
+        workbook = client.open_by_key(wb_id)
+
+    except Exception as e:
+        log.error(
+            f"❌ Could not open Google Sheet. "
+            f"Make sure the sheet is shared as 'Anyone with the link can edit'. "
+            f"Error: {e}"
+        )
+        return
+
+    # ── Split by apply type ───────────────────────────────────────────────────
+    extraction_fields = [
+        "position", "company", "url", "salary", "jt0", "is_remote",
+        "location", "apply_type", "benefits", "description", "rating",
+        "review_count", "job_match", "job_id", "external_apply_link",
+        "ignore_related", "is_expired",
+    ]
+
+    easy_jobs = sorted(
+        [j for j in jobs if j.get("apply_type") == "Easy Apply"],
+        key=lambda j: j.get("job_match", 0), reverse=True,
+    )
+    cs_jobs = sorted(
+        [j for j in jobs if j.get("apply_type") == "CS Apply"],
+        key=lambda j: j.get("job_match", 0), reverse=True,
+    )
+
+    # ── Get / create worksheet ────────────────────────────────────────────────
+    try:
+        worksheet = workbook.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = workbook.add_worksheet(title=sheet_name, rows=5000, cols=40)
+        log.warning(f"📰 Created new worksheet: {sheet_name}")
+
+    # ── Build rows ────────────────────────────────────────────────────────────
+    def jobs_to_rows(job_list: list[dict]) -> list[list]:
+        rows = []
+        for job in job_list:
+            row = []
+            for f in extraction_fields:
+                val = job.get(f, "")
+                if hasattr(val, "strftime"):
+                    val = val.strftime("%m/%d/%Y %I:%M %p")
+                row.append(val if val is not None else "")
+            rows.append(row)
+        return rows
+
+    pk_tz    = pytz.timezone("Asia/Karachi")
+    now      = datetime.now(pk_tz)
+    date_str = now.strftime("%m/%d/%Y")
+    time_str = now.strftime("%I:%M %p")
+
+    all_rows = (
+        [["Easy Apply", time_str, date_str]]
+        + jobs_to_rows(easy_jobs)
+        + [[]]
+        + [["CS Apply", time_str, date_str]]
+        + jobs_to_rows(cs_jobs)
+    )
+
+    try:
+        existing  = worksheet.get_all_values()
+        start_row = len(existing) + 2
+        worksheet.update(range_name=f"A{start_row}", values=all_rows)
+        log.info(
+            f"✅ Wrote {len(easy_jobs)} Easy Apply + {len(cs_jobs)} CS Apply jobs | {link}"
+        )
+    except Exception as e:
+        log.error(
+            f"❌ Error writing to Google Sheet. "
+            f"Ensure the sheet is shared as 'Anyone with the link can edit'. "
+            f"Error: {e}"
+        )
+        return
+
+    # ── Formatting ────────────────────────────────────────────────────────────
+    try:
+        sheet_id = worksheet._properties["sheetId"]
+        num_rows = len(all_rows)
+        workbook.batch_update({
+            "requests": [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId":       sheet_id,
+                            "startRowIndex": start_row - 1,
+                            "endRowIndex":   start_row - 1 + num_rows,
+                        },
+                        "cell":   {"userEnteredFormat": {"wrapStrategy": "OVERFLOW_CELL"}},
+                        "fields": "userEnteredFormat.wrapStrategy",
+                    }
+                },
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId":    sheet_id,
+                            "dimension":  "ROWS",
+                            "startIndex": start_row - 1,
+                            "endIndex":   start_row - 1 + num_rows,
+                        },
+                        "properties": {"pixelSize": 21},
+                        "fields":     "pixelSize",
+                    }
+                },
+            ]
+        })
+    except Exception as e:
+        log.warning(f"⚠️ Row formatting warning: {e}")
+
+
+"""
+src/config.py — Static settings for the Apify actor.
+All runtime values come from Actor input (see main.py).
+"""
+from __future__ import annotations
+from pathlib import Path
+
+class ScraperSettings:
+    # Paths
+    BASE_DIR             = Path(__file__).resolve().parent.parent
+    PROXIES_PATH         = BASE_DIR / "utils" / "proxies.txt"
+    PROXIES_STATE          = BASE_DIR / "utils" / "proxy_state.json"
+    DB_SCREENSHOTS_PATH  = BASE_DIR / "utils" / "db_screenshots"
+    
+    # ── Concurrency cap ───────────────────────────────────────────────────────
+    MAX_CONCURRENCY = 25
+    # HEADLESS = False
+    HEADLESS = True
+    CONTEXT_ROTATE_LIMIT = 300
+    GET_PERCENTAGES_BATCH_SIZE = 10
+    UID_FLUSH_SIZE = 30
+
+    # ── Google Sheets (public URL mode) ──────────────────────────────────────
+    gsheet_scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    # Map of country codes → Indeed base domains
+    indeed_country_domains: dict[str, str] = {
+        "us":  "https://www.indeed.com",
+        "uk":  "https://uk.indeed.com",
+        "ca":  "https://ca.indeed.com",
+        "au":  "https://au.indeed.com",
+        "in":  "https://www.indeed.co.in",
+        "de":  "https://de.indeed.com",
+        "fr":  "https://fr.indeed.com",
+        "sg":  "https://www.indeed.com.sg",
+        "pk":  "https://www.indeed.com.pk",
+        "nl":  "https://www.indeed.nl",
+        "es":  "https://www.indeed.es",
+        "it":  "https://it.indeed.com",
+        "br":  "https://www.indeed.com.br",
+        "mx":  "https://www.indeed.com.mx",
+        "nz":  "https://nz.indeed.com",
+        "jp":  "https://jp.indeed.com",
+        "ae":  "https://www.indeed.ae",
+        "sa":  "https://www.indeed.com.sa",
+    }
+
+    # ── Fields written to Apify dataset (Actor.push_data) ────────────────────
+    extraction_fields = [
+        "id","positionName","company","location","isRemote","jobType","salary","rating","reviewsCount","jobMatch","description","ignoreRelated","descriptionHTML","benefits","applyType","externalApplyLink","url","companyIndeedUrl","isExpired","postedAt","postingDateParsed","scrapedAt","searchInput","searchInput/country","searchInput/location","searchInput/position"
+        ]
+
+
+
