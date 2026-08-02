@@ -102,7 +102,7 @@ async def _run_listing_phase(
         # ── Sign-in wall check ────────────────────────────────────────────────
         if is_login_wall_html(html):
             Actor.log.warning(
-                f"🛑 Sign-in wall detected — terminating scrape. Update cookies."
+                f"🛑 Sign-in wall detected — terminating scrape."
             )
             config.signal_login_wall()
             clear_queue(url_queue)
