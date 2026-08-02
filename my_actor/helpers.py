@@ -167,37 +167,35 @@ async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[fl
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML parsing helpers (BeautifulSoup — replace Playwright selectors)
 # ─────────────────────────────────────────────────────────────────────────────
-
 def parse_listing_cards(html: str) -> list[dict]:
-    """
-    Extract job cards from an Indeed search-results page HTML.
-    Returns a list of {company, position, href, uid} dicts.
-    """
     soup = BeautifulSoup(html, "lxml")
-    cards = [c for c in soup.select(".cardOutline") if c.get("aria-hidden") != "true"]
+
+    cards = [
+        c for c in soup.select(".cardOutline")
+        if c.get("aria-hidden") != "true"
+    ]
 
     results = []
+
     for card in cards:
-        company_el  = card.select_one('[data-testid="company-name"]')
-        title_el    = card.select_one(".jobTitle")
-        link_el     = card.select_one("tr td a[data-jk]")
+        company_el = card.select_one('[data-testid="company-name"]')
+        title_el = card.select_one(".jobTitle")
+        link_el = card.select_one("tr td a")
 
         if not all([company_el, title_el, link_el]):
             continue
 
         uid = link_el.get("data-jk", "").strip()
-        if not uid:
-            continue
 
         href = link_el.get("href", "")
         if href and not href.startswith("http"):
             href = "https://www.indeed.com" + href
 
         results.append({
-            "company":  company_el.get_text(strip=True),
+            "company": company_el.get_text(strip=True),
             "position": title_el.get_text(strip=True),
-            "href":     href,
-            "uid":      uid,
+            "href": href,
+            "uid": uid,
         })
 
     return results
