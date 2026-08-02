@@ -129,7 +129,6 @@ async def _run_listing_phase(
             continue
 
         if not cards:
-            Actor.log.warning(f"⚠️ Worker {worker_id} no cards found on {job_search_url}")
             url_queue.task_done()
             continue
 

@@ -164,16 +164,23 @@ async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[fl
     return await _matcher.match(about_me, job_titles)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HTML parsing helpers (BeautifulSoup — replace Playwright selectors)
-# ─────────────────────────────────────────────────────────────────────────────
 def parse_listing_cards(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
 
+    all_cards = soup.select(".cardOutline")
+
+    if not all_cards:
+        print("⚠️ No elements found for selector '.cardOutline' — page structure may have changed or content didn't load.")
+        return []
+
     cards = [
-        c for c in soup.select(".cardOutline")
+        c for c in all_cards
         if c.get("aria-hidden") != "true"
     ]
+
+    if not cards:
+        print("⚠️ '.cardOutline' elements were found, but all were hidden (aria-hidden='true').")
+        return []
 
     results = []
 
@@ -187,7 +194,6 @@ def parse_listing_cards(html: str) -> list[dict]:
 
         raw_href = link_el.get("href", "")
 
-        # Skip sponsored/ad listings entirely
         if "pagead/clk" in raw_href:
             continue
 
@@ -196,7 +202,7 @@ def parse_listing_cards(html: str) -> list[dict]:
             uid = card.get("data-jk", "").strip()
 
         if not uid:
-            continue  # no stable job key, skip
+            continue
 
         canonical_url = f"https://www.indeed.com/viewjob?jk={uid}"
 
