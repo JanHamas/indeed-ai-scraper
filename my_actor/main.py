@@ -58,9 +58,6 @@ async def main() -> None:
         google_sheet_url = actor_input.get("google_sheet_url", "")
         sheet_name       = actor_input.get("sheet_name", "Indeed Jobs")
 
-        # ── Indeed account cookies ────────────────────────────────────────────
-        account_cookies: list[dict] = actor_input.get("account_cookies", [])
-
         # ── Processed job URLs → extract IDs to skip ─────────────────────────
         processed_urls_raw: list = actor_input.get("processed_job_urls", [])
         processed_url_list: list[str] = []
@@ -113,7 +110,6 @@ async def main() -> None:
             min_match_percentage=min_match_pct,
             concurrency=concurrency,
             processed_uids=processed_uids,
-            account_cookies=account_cookies,
             search_keywords=search_keywords,
             search_location=search_location,
             search_country=search_country,
@@ -126,11 +122,6 @@ async def main() -> None:
             sheet_name=sheet_name,
         )
 
-        if not account_cookies:
-            Actor.log.warning(
-                "⚠️ No cookies — scraping without login. "
-                "Indeed may show limited results or redirect to login."
-            )
 
         await showstartinginfo(config)
 

@@ -541,9 +541,6 @@ class ScraperConfig:
     google_sheet_url: str = ""
     sheet_name:       str = "Indeed Jobs"
 
-    # Auth
-    account_cookies: List[dict] = field(default_factory=list)
-
     # Runtime state
     processed_uids: Set[str] = field(default_factory=set)
 
@@ -690,7 +687,6 @@ def load_scraper_config(
     min_match_percentage:     int,
     concurrency:              int,
     processed_uids:           set[str],
-    account_cookies:          list[dict],
     search_keywords:          list[str],
     search_location:          str,
     search_country:           str,
@@ -724,7 +720,6 @@ def load_scraper_config(
         google_sheet_url=google_sheet_url,
         sheet_name=sheet_name,
         processed_uids=processed_uids,
-        account_cookies=account_cookies,
     )
 
 
@@ -753,7 +748,6 @@ async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info(f"🚫 Ignore companies:    {len(config.ignore_companies)}")
     Actor.log.info(f"🚫 Ignore related:      {config.ignore_related}")
     Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")
-    Actor.log.info(f"🍪 Cookies:             {'provided' if config.account_cookies else 'not provided'}")
     Actor.log.info("=" * 80)
     Actor.log.info("🏃 Starting scraper execution…")
 

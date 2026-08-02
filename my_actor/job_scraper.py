@@ -171,7 +171,7 @@ def _bs_posted_date(html: str) -> tuple[str, str]:
 
 def _bs_is_expired(soup: BeautifulSoup) -> bool:
     for el in soup.find_all(string=True):
-        if "This job has expired on Indeed" in el:
+        if "<!-- -->This job has expired on Indeed<!-- -->" in el:
             return True
     return False
 
@@ -218,15 +218,19 @@ async def process_filter_jobs(
         Actor.log.error(f"❌ All retries failed, re-queued: {url}")
         return False
 
+    # Parse once, reuse everywhere
+    soup = BeautifulSoup(html, "lxml")
+
     # ── Ignore-related keyword filter ─────────────────────────────────────────
     if config.ignore_related:
-        soup_text = BeautifulSoup(html, "lxml").get_text(" ", strip=True).lower()
-        if any(kw in soup_text for kw in config.ignore_related):
-            Actor.log.info(f"⏭ Skipped (ignore_related): {url}")
+        soup_text = soup.get_text(" ", strip=True).lower()
+        matched_kw = next((kw for kw in config.ignore_related if kw in soup_text), None)
+        if matched_kw:
+            Actor.log.info(f"⏭ Skipped (ignore_related, matched: '{matched_kw}'): {url}")
             if config.skip_ignore_related_jobs:
                 await config.release_slot()
                 return False
-    
+
     # Expired
     is_expired = _bs_is_expired(soup)
     data["isExpired"] = True if is_expired else False
@@ -234,7 +238,7 @@ async def process_filter_jobs(
         Actor.log.info(f"⏭ Skipped (expired): {url}")
         await config.release_slot()
         return False
-
+    
     # ── Try embedded JSON first (fastest path) ────────────────────────────────
     job = parse_indeed_job_from_embedded_json(html)
 
