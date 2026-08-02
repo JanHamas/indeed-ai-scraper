@@ -185,21 +185,29 @@ def parse_listing_cards(html: str) -> list[dict]:
         if not all([company_el, title_el, link_el]):
             continue
 
-        uid = link_el.get("data-jk", "").strip()
+        raw_href = link_el.get("href", "")
 
-        href = link_el.get("href", "")
-        if href and not href.startswith("http"):
-            href = "https://www.indeed.com" + href
+        # Skip sponsored/ad listings entirely
+        if "pagead/clk" in raw_href:
+            continue
+
+        uid = link_el.get("data-jk", "").strip()
+        if not uid:
+            uid = card.get("data-jk", "").strip()
+
+        if not uid:
+            continue  # no stable job key, skip
+
+        canonical_url = f"https://www.indeed.com/viewjob?jk={uid}"
 
         results.append({
             "company": company_el.get_text(strip=True),
             "position": title_el.get_text(strip=True),
-            "href": href,
+            "href": canonical_url,
             "uid": uid,
         })
 
     return results
-
 
 def has_next_page(html: str) -> bool:
     """True if Indeed's pagination shows a next-page link."""
