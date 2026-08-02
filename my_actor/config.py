@@ -24,6 +24,9 @@ SCRAPEDO_ACCOUNTS = [
     {"name": "account_1", "token": "073c0a5abcc349929759d0bb11f77390bf4e9bcb020", "rate_limit": 5},
     # # hamasjan5544 gmail account
     # {"name": "account_2", "token": "d41c219017c34ccdba590bf240669a539c130eb553e", "rate_limit": 5},
+    
+    # # parveen gmail account
+    {"name": "account_2", "token": "571a8bcb0e564063a5258ca3b59b64d3c5a9c7017a7", "rate_limit": 5},
  ]
 
 
