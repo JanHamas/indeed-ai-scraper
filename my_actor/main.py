@@ -25,10 +25,6 @@ from .gsheet import upload_to_google_sheet
 
 PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
-# NOTE: Decodo's Scraper API (https://scraper-api.decodo.com) is a normal
-# HTTPS endpoint — unlike BrightData's proxy, there's no need to disable
-# certificate verification, so the shared connector uses default SSL.
-
 
 async def main() -> None:
     async with Actor:

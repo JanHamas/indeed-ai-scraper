@@ -24,7 +24,7 @@ from .helpers import (
     is_login_wall_html,
     clear_queue,
 )
-from .decodo import rotator
+from .scrapedo import rotator
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
 
 

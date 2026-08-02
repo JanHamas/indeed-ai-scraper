@@ -30,7 +30,7 @@ from .helpers import (
     _base_url_of,
     purge_queue_beyond,
 )
-from .decodo import rotator
+from .scrapedo import rotator
 from .job_scraper import process_filter_jobs
 from .config import ScraperSettings
 

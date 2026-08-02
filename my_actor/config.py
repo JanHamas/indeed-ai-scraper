@@ -1,64 +1,41 @@
 """
 my_actor/config.py
-Decodo Web Scraping API accounts and scraper limits.
+Scrape.do Web Scraping API accounts and scraper limits.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   HOW TO ADD MORE ACCOUNTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Copy the block below and append it to DECODO_ACCOUNTS.
+Copy the block below and append it to SCRAPEDO_ACCOUNTS.
 The scraper auto-detects all accounts and rotates through them.
 When one fails or hits its rate limit, the next one is tried automatically.
 
-`authorization` is the full "Basic <base64(user:pass)>" string shown on
-your Decodo dashboard (Scraping APIs → Web Scraping API → Authentication).
+`token` is the API token shown on your Scrape.do dashboard.
+Strongly recommend loading these from environment variables instead of
+hardcoding them here (e.g. os.environ["SCRAPEDO_TOKEN_1"]).
 """
 
-API_URL = "https://scraper-api.decodo.com/v2/scrape"
+API_URL = "https://api.scrape.do/"
 
-# ── Decodo Web Scraping API accounts ──────────────────────────────────────────
+# ── Scrape.do accounts ─────────────────────────────────────────────────────
 # Add more dicts here when you buy additional subscriptions/tokens.
-# ─────────────────────────────────────────────────────────────────────────────
-DECODO_ACCOUNTS = [
-    {
-        "name": "account_1",
-        "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm",
-        "rate_limit": 10,
-    },
-    {
-        "name": "account_2",
-        "authorization": "Basic VTAwMDA0Nzc4Mzc6UFdfMWU3ZDYxMjJlYzdmNTM2OThmYWJmOGZkODhmYjg0ODM0",
-        "rate_limit": 10,
-    },
-    # ← ADD MORE ACCOUNTS HERE:
-
-    {
-        "name": "account_3",
-        "authorization": "Basic VTAwMDA0NTA4MjM6UFdfMWQ0MjFlYmE2YjljNGEwNjYyZTZjMzg0YTdhMDA0OTNm",
-        "rate_limit": 10,
-    },
-    
-    {
-        "name": "account_4",
-        "authorization": "Basic VTAwMDA0NTE2OTU6UFdfMWQ3MmE2YmNlNzkyNTY4NTZmNDYxYTFiMzRjZjA2NGRl",
-        "rate_limit": 10,
-    },
-
-    {
-        "name": "account_5",
-        "authorization": "Basic VTAwMDA0NDkyMDQ6UFdfMWQ1NTg0NjNjN2RhZDJjZjRjYmRlZDIzNTM2ZjA0ZTkz",
-        "rate_limit": 10,
-    },
+# ────────────────────────────────────────────────────────────────────────────
+SCRAPEDO_ACCOUNTS = [
+    # harisjan4455 gamil account
+    {"name": "account_1", "token": "073c0a5abcc349929759d0bb11f77390bf4e9bcb020", "rate_limit": 5},
+    # hamasjan5544 gmail account
+    {"name": "account_2", "token": "d41c219017c34ccdba590bf240669a539c130eb553e", "rate_limit": 5},
 ]
+
+
 class ScraperSettings:
     MAX_CONCURRENCY     = 50
     REQUEST_TIMEOUT     = 120       # seconds per HTTP request
-    MAX_RETRIES         = 3        # attempts per URL before giving up
-    RETRY_DELAY_MIN     = 2        # seconds min between retries
-    RETRY_DELAY_MAX     = 5        # seconds max between retries
-    UID_FLUSH_SIZE      = 200      # flush processed UIDs to KV store after this many
-    PAGES_PER_QUERY     = 50       # pagination pages pre-built per seed URL
+    MAX_RETRIES         = 3         # attempts per URL before giving up
+    RETRY_DELAY_MIN     = 2
+    RETRY_DELAY_MAX     = 5
+    UID_FLUSH_SIZE       = 200
+    PAGES_PER_QUERY      = 50
 
-    # Indeed country → domain
     indeed_country_domains: dict[str, str] = {
         "us": "https://www.indeed.com",
         "uk": "https://uk.indeed.com",
