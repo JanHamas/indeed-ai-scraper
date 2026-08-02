@@ -63,7 +63,7 @@ class AccountRotator:
         url: str,
         session: aiohttp.ClientSession,
         headers: Optional[dict] = None,
-        render: bool = True,
+        render: bool = False,
     ) -> str:
         """
         Fetch `url` through Scrape.do, rotating accounts on failure.
