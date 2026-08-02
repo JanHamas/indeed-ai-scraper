@@ -21,8 +21,6 @@ from .helpers import (
     ScraperConfig,
     push_job_data,
     check_remote_status,
-    is_login_wall_html,
-    clear_queue,
 )
 from .scrapedo import rotator
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
@@ -220,15 +218,6 @@ async def process_filter_jobs(
         Actor.log.error(f"❌ All retries failed, re-queued: {url}")
         return False
 
-    # ── Sign-in wall check ────────────────────────────────────────────────────
-    if is_login_wall_html(html):
-        Actor.log.warning(
-            f"🛑 Sign-in wall detected — terminating scrape. Update cookies: {url}"
-        )
-        config.signal_login_wall()
-        clear_queue(filter_queue)
-        return False
-
     # ── Ignore-related keyword filter ─────────────────────────────────────────
     if config.ignore_related:
         soup_text = BeautifulSoup(html, "lxml").get_text(" ", strip=True).lower()
@@ -237,6 +226,14 @@ async def process_filter_jobs(
             if config.skip_ignore_related_jobs:
                 await config.release_slot()
                 return False
+    
+    # Expired
+    is_expired = _bs_is_expired(soup)
+    data["isExpired"] = True if is_expired else False
+    if is_expired and config.skip_expired_jobs:
+        Actor.log.info(f"⏭ Skipped (expired): {url}")
+        await config.release_slot()
+        return False
 
     # ── Try embedded JSON first (fastest path) ────────────────────────────────
     job = parse_indeed_job_from_embedded_json(html)
@@ -335,13 +332,6 @@ async def process_filter_jobs(
 
         # Posted date
         data["postedAt"], data["postingDateParsed"] = _bs_posted_date(html)
-
-        # Expired
-        is_expired = _bs_is_expired(soup)
-        data["isExpired"] = True if is_expired else False
-        if is_expired and config.skip_expired_jobs:
-            await config.release_slot()
-            return False
 
         # Rating & reviews
         rr = _bs_rating_and_reviews(soup)

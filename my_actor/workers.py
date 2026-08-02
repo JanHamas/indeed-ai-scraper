@@ -22,7 +22,6 @@ from .helpers import (
     ScraperConfig,
     parse_listing_cards,
     has_next_page,
-    is_login_wall_html,
     clear_queue,
     flush_batch,
     _flush_shared_batch,
@@ -98,16 +97,6 @@ async def _run_listing_phase(
             Actor.log.error(f"❌ Worker {worker_id} gave up on listing: {job_search_url}")
             url_queue.task_done()
             continue
-
-        # ── Sign-in wall check ────────────────────────────────────────────────
-        if is_login_wall_html(html):
-            Actor.log.warning(
-                f"🛑 Sign-in wall detected — terminating scrape."
-            )
-            config.signal_login_wall()
-            clear_queue(url_queue)
-            url_queue.task_done()
-            break
 
         Actor.log.info(f"🔍 Worker {worker_id} listing: {job_search_url}")
 

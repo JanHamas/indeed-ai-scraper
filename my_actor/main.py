@@ -169,8 +169,13 @@ async def main() -> None:
 
             status_task = asyncio.create_task(status_logger(config, stop_event))
 
-            n_primary = max(1, int(concurrency * 16 / 100))   # 16% primary
-            n_hybrid  = concurrency - n_primary                # 84% hybrid
+            if concurrency <= 5:
+                n_primary = 1
+                print(n_primary)
+            else:
+                n_primary = 2
+                print(n_primary)
+            n_hybrid  = concurrency - n_primary           
 
             primary_listing_tasks = [
                 asyncio.create_task(

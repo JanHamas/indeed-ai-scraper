@@ -227,9 +227,6 @@ def get_page_title(html: str) -> str:
     return title_el.get_text(strip=True).lower() if title_el else ""
 
 
-def is_login_wall_html(html: str) -> bool:
-    return "sign in | indeed accounts" in get_page_title(html)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # URL helpers
