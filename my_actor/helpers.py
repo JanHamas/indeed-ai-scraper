@@ -256,20 +256,13 @@ def sanitize_indeed_url(url: str) -> str:
         if query
         else f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     )
-def ensure_sort_by_date(url: str) -> str:
-    """Force sort=date onto a job search URL, preserving other params."""
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
-    params["sort"] = ["date"]
-    query = urlencode({k: v[0] for k, v in params.items()})
-    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{query}"
+
 
 def build_indeed_search_urls(
     keywords: list[str],
     location: str,
     country: str,
     date_filter: str = "any",
-    sort_by_date: bool = True,   # new param
 ) -> list[str]:
     base_domain = ScraperSettings.indeed_country_domains.get(
         country.lower().strip(), ScraperSettings.indeed_country_domains["us"]
@@ -284,14 +277,13 @@ def build_indeed_search_urls(
             params["l"] = location.strip()
         if date_filter and date_filter != "any":
             params["fromage"] = date_filter
-        if sort_by_date:
-            params["sort"] = "date"          # <-- adds &sort=date
         urls.append(f"{base_domain}/jobs?{urlencode(params)}")
     Actor.log.info(
         f"🔧 Built {len(urls)} search URL(s) for {len(keywords)} keyword(s) "
-        f"| country={country} | location='{location}' | date_filter={date_filter} | sort={'date' if sort_by_date else 'relevance'}"
+        f"| country={country} | location='{location}' | date_filter={date_filter}"
     )
     return urls
+
 
 def _base_url_of(url: str) -> str:
     """Strip start= param to get the seed URL."""
