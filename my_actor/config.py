@@ -20,13 +20,17 @@ API_URL = "https://api.scrape.do/"
 # Add more dicts here when you buy additional subscriptions/tokens.
 # ────────────────────────────────────────────────────────────────────────────
 SCRAPEDO_ACCOUNTS = [
-    # harisjan4455 gamil account
+    # harisjan4455gamil.com Usage: 99.10%   renew: 02/09/2026 12:48
     {"name": "account_1", "token": "073c0a5abcc349929759d0bb11f77390bf4e9bcb020", "rate_limit": 5},
-    # # hamasjan5544 gmail account
-    # {"name": "account_2", "token": "d41c219017c34ccdba590bf240669a539c130eb553e", "rate_limit": 5},
     
-    # # parveen gmail account
+    # p98632838@gmail.com Usage: 99.70% renew: 03/09/2026 02:37
     {"name": "account_2", "token": "571a8bcb0e564063a5258ca3b59b64d3c5a9c7017a7", "rate_limit": 5},
+
+    # hamsajan33@gmail.com Usage: 0.10% renew: 03/09/2026 04:39
+    {"name": "account_3", "token": "d0f9b10dbc474b808e81d2ed93e3ba745e982b14513", "rate_limit": 5},
+    
+    # hamsajan33@gmail.com Usage: 0.10% renew: 03/09/2026 04:51
+    {"name": "account_4", "token": "43cdbc953894435fa402c3e6f3a9baafff4f7c857cd", "rate_limit": 5},
  ]
 
 
