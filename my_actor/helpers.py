@@ -256,6 +256,13 @@ def sanitize_indeed_url(url: str) -> str:
         if query
         else f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     )
+def ensure_sort_by_date(url: str) -> str:
+    """Force sort=date onto a job search URL, preserving other params."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    params["sort"] = ["date"]
+    query = urlencode({k: v[0] for k, v in params.items()})
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{query}"
 
 def build_indeed_search_urls(
     keywords: list[str],
