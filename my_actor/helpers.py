@@ -194,8 +194,8 @@ def parse_listing_cards(html: str) -> list[dict]:
 
         raw_href = link_el.get("href", "")
 
-        # if "pagead/clk" in raw_href:
-        #     continue
+        if "pagead/clk" in raw_href:
+            continue
 
         uid = link_el.get("data-jk", "").strip()
         if not uid:
