@@ -22,8 +22,8 @@ API_URL = "https://api.scrape.do/"
 SCRAPEDO_ACCOUNTS = [
     # harisjan4455 gamil account
     {"name": "account_1", "token": "073c0a5abcc349929759d0bb11f77390bf4e9bcb020", "rate_limit": 5},
-    # hamasjan5544 gmail account
-    {"name": "account_2", "token": "d41c219017c34ccdba590bf240669a539c130eb553e", "rate_limit": 5},
+    # # hamasjan5544 gmail account
+    # {"name": "account_2", "token": "d41c219017c34ccdba590bf240669a539c130eb553e", "rate_limit": 5},
 ]
 
 
