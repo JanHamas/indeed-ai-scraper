@@ -37,7 +37,7 @@ class ScraperSettings:
     RETRY_DELAY_MIN     = 2
     RETRY_DELAY_MAX     = 5
     UID_FLUSH_SIZE       = 200
-    PAGES_PER_QUERY      = 50
+    PAGES_PER_QUERY      = 100
 
     indeed_country_domains: dict[str, str] = {
         "us": "https://www.indeed.com",
