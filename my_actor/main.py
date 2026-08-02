@@ -19,7 +19,6 @@ from .helpers import (
     status_logger,
     _flush_shared_batch,
     sanitize_indeed_url,
-    ensure_sort_by_date,
 )
 from .workers import primary_listing_worker, hybrid_listing_worker, processing_worker
 from .gsheet import upload_to_google_sheet
@@ -100,7 +99,7 @@ async def main() -> None:
             )
 
         # ── Force sort=date on every URL, regardless of source ────────────────
-        url_list = [ensure_sort_by_date(u) for u in url_list]
+        url_list = [u for u in url_list]
         Actor.log.info(f"📅 Applied sort=date to {len(url_list)} search URL(s)")
 
         # ── Build config ──────────────────────────────────────────────────────
