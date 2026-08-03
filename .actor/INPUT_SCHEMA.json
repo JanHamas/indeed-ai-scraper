@@ -60,14 +60,6 @@
       "prefill": []
     },
 
-    "about_me": {
-      "title": "🎯 Target Job Titles for AI Matching (one per line, optional)",
-      "type": "string",
-      "description": "Enter the job titles you are targeting, one per line. The AI (JobBERT) scores each scraped job title against yours — only jobs meeting your minimum score are saved.\n\nLeave blank to disable AI filtering and collect all jobs.",
-      "editor": "textarea",
-      "prefill": ""
-    },
-
     "min_match_percentage": {
       "title": "🤖 Minimum AI Match Score (0–100)",
       "type": "integer",
