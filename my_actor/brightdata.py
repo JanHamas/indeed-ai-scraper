@@ -1,43 +1,53 @@
 """
-my_actor/scrapedo.py
-Scrape.do Web Scraping API client with multi-account rotation.
+my_actor/brightdata.py
+Bright Data Web Unlocker client with multi-account (multi-zone) rotation —
+native/proxy access edition.
 
-Scrape.do's API is a plain HTTPS GET endpoint: you call
-https://api.scrape.do/ with `token` and `url` (url-encoded) as query
-params, and it returns the target page's raw HTML/content directly in
-the response body — no JSON envelope to unwrap (unlike Decodo).
+Bright Data's native proxy access works like a normal authenticated HTTP
+proxy: you point aiohttp's `proxy=` at Bright Data's super-proxy
+(`brd.superproxy.io:44445`), authenticate with your zone's
+username/password via Basic Auth, and request the target `url` exactly
+like a direct request — Bright Data's infrastructure handles unblocking,
+JS rendering, and CAPTCHA solving transparently and hands back the
+target site's real response (status code, headers, body) as if you'd
+hit it directly. There's no JSON envelope to unwrap.
+
+Because Web Unlocker terminates TLS itself to inspect/unblock traffic,
+the certificate the "target" presents through the tunnel is Bright
+Data's own — so certificate verification is disabled for these
+requests (this is Bright Data's documented behavior, not a bug).
 
 One aiohttp.ClientSession is shared across all workers.
-On failure or rate-limit (429/402/401/403), the next account is tried
-automatically. When all accounts are exhausted, a warning is printed
-and an exception is raised.
+On failure or rate-limit/auth error (429/407/402/401/403), the next
+account is tried automatically. When all accounts are exhausted, a
+warning is printed and an exception is raised.
 """
 from __future__ import annotations
 
 import asyncio
-import urllib.parse
 from typing import Optional
 
 import aiohttp
 from apify import Actor
 
-from .config import SCRAPEDO_ACCOUNTS, API_URL, ScraperSettings
+from .config import BRIGHTDATA_ACCOUNTS, ScraperSettings
 
 
 class AccountRotator:
     """
-    Round-robin Scrape.do account rotator with per-account failure tracking.
+    Round-robin Bright Data account (zone) rotator with per-account failure tracking.
 
     All workers share one instance. On each fetch():
       1. Pick the next non-failed account.
-      2. GET Scrape.do's endpoint with that account's token.
-      3. On 429/402/401/403 → mark account failed, try next.
+      2. GET `url` through Bright Data's super-proxy, authenticated with
+         that account's username/password.
+      3. On 429/407/402/401/403 → mark account failed, try next.
       4. On success → clear failure flag for that account.
       5. If all accounts fail → reset failure set, log a warning, raise.
     """
 
     def __init__(self) -> None:
-        self._accounts = list(SCRAPEDO_ACCOUNTS)
+        self._accounts = list(BRIGHTDATA_ACCOUNTS)
         self._idx = 0
         self._lock = asyncio.Lock()
         self._failed: set[int] = set()
@@ -66,18 +76,23 @@ class AccountRotator:
         render: bool = False,
     ) -> str:
         """
-        Fetch `url` through Scrape.do, rotating accounts on failure.
+        Fetch `url` through Bright Data's Web Unlocker proxy, rotating
+        accounts (zones) on failure.
 
-        `headers`, if given, are forwarded to the *target* site as real
-        HTTP request headers, with `customHeaders=true` set so Scrape.do
-        passes them through untouched.
-        `render=True` spins up Scrape.do's headless browser to execute
-        JS — matches what `headless="html"` gave you on Decodo.
+        `headers`, if given, are sent as real HTTP request headers on the
+        proxied request — Bright Data forwards them to the target site
+        as-is, no special flag needed (unlike Scrape.do's
+        `customHeaders=true`).
+
+        `render` is kept for call-site compatibility with the previous
+        client, but is a no-op here: Web Unlocker automatically detects
+        when a page needs JavaScript rendering and handles it per the
+        zone's configuration.
 
         Tries every available account once before raising.
         """
         tried: set[int] = set()
-        last_exc: Exception = RuntimeError("All Scrape.do accounts failed")
+        last_exc: Exception = RuntimeError("All Bright Data accounts failed")
 
         while len(tried) < len(self._accounts):
             idx = await self._pick()
@@ -88,19 +103,16 @@ class AccountRotator:
             account = self._accounts[idx]
             label = f"Account {idx + 1} ({account['name']})"
 
-            params = {
-                "token": account["token"],
-                "url": url,
-                "render": str(render).lower(),
-            }
-            if headers:
-                params["customHeaders"] = "true"
+            proxy_url = f"http://{account['host']}:{account['port']}"
+            proxy_auth = aiohttp.BasicAuth(account["username"], account["password"])
 
             try:
                 async with session.get(
-                    API_URL,
-                    params=params,
+                    url,
+                    proxy=proxy_url,
+                    proxy_auth=proxy_auth,
                     headers=headers or None,
+                    ssl=False,  # Web Unlocker terminates TLS itself — see module docstring
                     timeout=aiohttp.ClientTimeout(total=ScraperSettings.REQUEST_TIMEOUT),
                 ) as resp:
 
@@ -113,11 +125,11 @@ class AccountRotator:
                             self._failed.add(idx)
                         continue
 
-                    if resp.status in (401, 402, 403):
+                    if resp.status in (401, 402, 403, 407):
                         Actor.log.warning(
                             f"🛑 {label} returned {resp.status} — "
-                            "token may be invalid or plan may be FINISHED. "
-                            f"Please check your Scrape.do subscription for: {account['name']}"
+                            "username/password may be invalid or plan may be FINISHED. "
+                            f"Please check your Bright Data subscription for: {account['name']}"
                         )
                         async with self._lock:
                             self._failed.add(idx)

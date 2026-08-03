@@ -5,6 +5,7 @@ Usage:
     python run_local.py
 
 Reads input from storage/key_value_stores/default/INPUT.json
+
 """
 import asyncio
 import os

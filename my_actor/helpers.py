@@ -549,7 +549,6 @@ class ScraperConfig:
     new_processed_company_jobs: List[str]  = field(default_factory=list)
     extracted_jobs_counter:     int        = field(default=0, init=False)
     _saved_jobs:                List[dict] = field(default_factory=list, init=False)
-    _seen_fingerprints:         Set[str]   = field(default_factory=set, init=False)
 
     _last_page_start: Dict[str, int] = field(default_factory=dict, init=False)
     _lastpage_lock:   asyncio.Lock   = field(default=None, init=False, repr=False)
@@ -575,7 +574,6 @@ class ScraperConfig:
     # Locks
     _lock:             asyncio.Lock  = field(default=None, init=False, repr=False)
     _uid_buffer_lock:  asyncio.Lock  = field(default=None, init=False, repr=False)
-    _login_wall_event: asyncio.Event = field(default=None, init=False, repr=False)
 
     _uid_buffer:        List[str] = field(default_factory=list, init=False)
     _saved_account_ids: Set[int]  = field(default_factory=set, init=False)
@@ -595,19 +593,6 @@ class ScraperConfig:
         if self._uid_buffer_lock is None:
             self._uid_buffer_lock = asyncio.Lock()
         return self._uid_buffer_lock
-
-    @property
-    def login_wall_event(self) -> asyncio.Event:
-        if self._login_wall_event is None:
-            self._login_wall_event = asyncio.Event()
-        return self._login_wall_event
-
-    def signal_login_wall(self) -> None:
-        self.login_wall_event.set()
-
-    @property
-    def is_login_wall(self) -> bool:
-        return self._login_wall_event is not None and self._login_wall_event.is_set()
 
     async def buffer_uids(self, uids: list) -> None:
         async with self.uid_lock:
@@ -643,14 +628,6 @@ class ScraperConfig:
             self.new_processed_company_jobs.append(company_name)
             return True
 
-    def is_duplicate_fingerprint(self, position: str, company: str) -> bool:
-        if not self.save_unique_only:
-            return False
-        fp = f"{position.strip().lower()}|||{company.strip().lower()}"
-        if fp in self._seen_fingerprints:
-            return True
-        self._seen_fingerprints.add(fp)
-        return False
 
     async def confirm_filtered_jobs(
         self, links: list, percentages: list

@@ -1,37 +1,52 @@
 """
 my_actor/config.py
-Scrape.do Web Scraping API accounts and scraper limits.
+Bright Data Web Unlocker accounts (zones) and scraper limits.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   HOW TO ADD MORE ACCOUNTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Copy the block below and append it to SCRAPEDO_ACCOUNTS.
+Copy the block below and append it to BRIGHTDATA_ACCOUNTS.
 The scraper auto-detects all accounts and rotates through them.
 When one fails or hits its rate limit, the next one is tried automatically.
 
-`token` is the API token shown on your Scrape.do dashboard.
+This uses Bright Data's **native/proxy access** to Web Unlocker (the
+"Username" / "Password" / "Host" / "Port" panel in your zone's Overview
+tab), not the Direct REST API. Each "account" here is one zone:
+  - `username` is the full string shown as "Username" on the zone's
+    Overview tab, e.g. "brd-customer-hl_dbeb3119-zone-web_unlocker1"
+    (it already encodes your customer ID and zone name — use it as-is).
+  - `password` is the zone password shown as "Password".
+  - `host`/`port` are almost always "brd.superproxy.io" / 44445 for all
+    zones on your account, but are kept per-account here in case a zone
+    ever uses a different port.
+
 Strongly recommend loading these from environment variables instead of
-hardcoding them here (e.g. os.environ["SCRAPEDO_TOKEN_1"]).
+hardcoding them here (e.g. os.environ["BRIGHTDATA_PASSWORD_1"]).
 """
 
-API_URL = "https://api.scrape.do/"
-
-# ── Scrape.do accounts ─────────────────────────────────────────────────────
-# Add more dicts here when you buy additional subscriptions/tokens.
+# ── Bright Data Web Unlocker accounts (zones) ──────────────────────────────
+# Add more dicts here when you buy additional zones/subscriptions.
 # ────────────────────────────────────────────────────────────────────────────
-SCRAPEDO_ACCOUNTS = [
-    # harisjan4455gamil.com Usage: 99.10%   renew: 02/09/2026 12:48
-    {"name": "account_1", "token": "073c0a5abcc349929759d0bb11f77390bf4e9bcb020", "rate_limit": 5},
-    
-    # p98632838@gmail.com Usage: 99.70% renew: 03/09/2026 02:37
-    {"name": "account_2", "token": "571a8bcb0e564063a5258ca3b59b64d3c5a9c7017a7", "rate_limit": 5},
+BRIGHTDATA_ACCOUNTS = [
+    # # example@gmail.com Usage: xx% renew: dd/mm/yyyy
+    # {
+    #     "name": "account_1",
+    #     "username": "brd-customer-YOUR_CUSTOMER_ID-zone-YOUR_ZONE_NAME",
+    #     "password": "YOUR_ZONE_PASSWORD",
+    #     "host": "brd.superproxy.io",
+    #     "port": 44445,
+    #     "rate_limit": 5,
+    # },
 
-    # hamsajan33@gmail.com Usage: 0.10% renew: 03/09/2026 04:39
-    {"name": "account_3", "token": "d0f9b10dbc474b808e81d2ed93e3ba745e982b14513", "rate_limit": 5},
-    
-    # hamsajan33@gmail.com Usage: 0.10% renew: 03/09/2026 04:51
-    {"name": "account_4", "token": "43cdbc953894435fa402c3e6f3a9baafff4f7c857cd", "rate_limit": 5},
- ]
+    {
+        "name": "account_1",
+        "username": "brd-customer-hl_dbeb3119-zone-web_unlocker1",
+        "password": "rbw9khccsoqe",
+        "host": "brd.superproxy.io",
+        "port": 44445,
+        "rate_limit": 50,
+    },
+]
 
 
 class ScraperSettings:

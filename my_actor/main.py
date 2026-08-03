@@ -1,5 +1,5 @@
 """
-Indeed Scraper — Apify Actor (Decodo Web Scraping API edition)
+Indeed Scraper — Apify Actor (Bright Data Web Unlocker API edition)
 Entry point: my_actor/main.py
 """
 from __future__ import annotations
@@ -148,7 +148,7 @@ async def main() -> None:
 
         Actor.log.info(
             f"🚀 Launching {concurrency} listing + {concurrency} processing workers "
-            f"via Decodo Web Scraping API"
+            f"via Bright Data Web Unlocker API"
         )
 
         # ── Shared aiohttp session (one for all workers) ──────────────────────

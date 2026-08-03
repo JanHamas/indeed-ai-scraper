@@ -22,7 +22,7 @@ from .helpers import (
     push_job_data,
     check_remote_status,
 )
-from .scrapedo import rotator
+from .brightdata import rotator
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
 
 
@@ -216,7 +216,6 @@ async def process_filter_jobs(
     if html is None:
         await filter_queue.put((url, percentage))
         Actor.log.error(f"❌ All retries failed, re-queued: {url}")
-        return False
 
     # Parse once, reuse everywhere
     soup = BeautifulSoup(html, "lxml")
