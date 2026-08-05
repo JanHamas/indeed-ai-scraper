@@ -28,8 +28,10 @@ from .helpers import (
     update_processed_uids,
     _base_url_of,
     purge_queue_beyond,
+    save_debug_html
+
 )
-from .brightdata import rotator
+from .firecrawl_client import firecrawl as evomi
 from .job_scraper import process_filter_jobs
 from .config import ScraperSettings
 
@@ -87,7 +89,7 @@ async def primary_listing_worker(
     try:
         while True:
             # Stay alive for relisting if processing worker miss or skipp jobs eg, expired etc
-            if url_queue.empty() or config.extracted_jobs_counter >= config.max_jobs:
+            if url_queue.empty() or config.pushed_jobs >= config.max_jobs:
                 break
         
             try:
@@ -104,7 +106,7 @@ async def primary_listing_worker(
             html: str | None = None
             for attempt in range(ScraperSettings.MAX_RETRIES):
                 try:
-                    html = await rotator.fetch(job_search_url, session)
+                    html = await evomi.fetch(job_search_url, session)
                     break
                 except Exception as e:
                     Actor.log.warning(
@@ -120,6 +122,7 @@ async def primary_listing_worker(
                 Actor.log.error(f"❌ Worker {worker_id} gave up on listing: {job_search_url}")
                 url_queue.task_done()
                 continue
+            # save_debug_html(html, job_search_url, tag=f"w{worker_id}") 
     
             Actor.log.info(f"🔍 Worker {worker_id} listing: {job_search_url}")
     
@@ -137,6 +140,7 @@ async def primary_listing_worker(
                 cards = parse_listing_cards(html)
             except Exception as e:
                 Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
+                # await save_debug_html(html, job_search_url, tag="parse_error")   # ← add
                 url_queue.task_done()
                 continue
     
@@ -152,7 +156,6 @@ async def primary_listing_worker(
     
             for card in cards:
                 if await config.is_limit_reached():
-                    clear_queue(url_queue)
                     break
                 uid     = card["uid"]
                 company = card["company"]
@@ -198,7 +201,7 @@ async def primary_listing_worker(
     try:
         Actor.log.info(f"Primary listing worker {worker_id} switched to processing."
                        f"url_queue empty: {url_queue.empty()} |"
-                       f"extracted_jobs_counter: {config.extracted_jobs_counter}"
+                       f"pushed jobs: {config.pushed_jobs}"
                        )
         await _run_processing_phase(config, url_queue, filter_queue, worker_id, session)
     except Exception as e:
@@ -224,7 +227,7 @@ async def hybrid_listing_worker(
     try:
         while True:
             # Direct switch to processing worker once first time listing reached to max jobs
-            if await config.is_limit_reached() or (url_queue.empty() or config.extracted_jobs_counter >= config.max_jobs):
+            if await config.is_limit_reached() or (url_queue.empty() or config.pushed_jobs >= config.max_jobs):
                 break
             try:
                 start, job_search_url = url_queue.get_nowait()
@@ -240,7 +243,7 @@ async def hybrid_listing_worker(
             html: str | None = None
             for attempt in range(ScraperSettings.MAX_RETRIES):
                 try:
-                    html = await rotator.fetch(job_search_url, session)
+                    html = await evomi.fetch(job_search_url, session)
                     break
                 except Exception as e:
                     Actor.log.warning(
@@ -256,6 +259,7 @@ async def hybrid_listing_worker(
                 Actor.log.error(f"❌ Worker {worker_id} gave up on listing: {job_search_url}")
                 url_queue.task_done()
                 continue
+            # save_debug_html(html, job_search_url, tag=f"w{worker_id}") 
     
             Actor.log.info(f"🔍 Worker {worker_id} listing: {job_search_url}")
     
@@ -273,6 +277,7 @@ async def hybrid_listing_worker(
                 cards = parse_listing_cards(html)
             except Exception as e:
                 Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
+                # await save_debug_html(html, job_search_url, tag="parse_error")   # ← add
                 url_queue.task_done()
                 continue
     
@@ -288,7 +293,6 @@ async def hybrid_listing_worker(
     
             for card in cards:
                 if await config.is_limit_reached():
-                    clear_queue(url_queue)
                     break
                 uid     = card["uid"]
                 company = card["company"]
@@ -333,7 +337,7 @@ async def hybrid_listing_worker(
 
     try:
         Actor.log.info(f"Hybrid listing worker {worker_id} switched to processing."
-                       f"url_queue empty: {url_queue.empty()} | extracted_job_counter: {config.extracted_jobs_counter} | is_limit: {config.is_limit_reached()}")
+                       f"url_queue empty: {url_queue.empty()} | extracted_job_counter: {config.extracted_jobs_counter} | is_limit: {await config.is_limit_reached()}")
         await _run_processing_phase(config, url_queue, filter_queue, worker_id, session)
     except Exception as e:
         Actor.log.error(f"❌ Worker {worker_id} processing phase failed: {e}")

@@ -1,5 +1,5 @@
 """
-Indeed Scraper — Apify Actor (Bright Data Web Unlocker API edition)
+Indeed Scraper — Apify Actor (Firecrawl edition)
 Entry point: my_actor/main.py
 """
 from __future__ import annotations
@@ -10,6 +10,8 @@ import aiohttp
 from apify import Actor
 
 from .config import ScraperSettings
+from .firecrawl_client import firecrawl
+from .run_registry import run_registry
 from .helpers import (
     load_scraper_config,
     expand_to_paginated_urls,
@@ -28,6 +30,16 @@ PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
 async def main() -> None:
     async with Actor:
+        # ── Multiple runs are now allowed at once — each just gets a fair
+        # share of the shared Firecrawl capacity instead of waiting in line.
+        await run_registry.join()
+        try:
+            await _run()
+        finally:
+            await run_registry.leave()
+
+
+async def _run() -> None:
         actor_input = await Actor.get_input() or {}
 
         # ── Core config ───────────────────────────────────────────────────────
@@ -37,8 +49,19 @@ async def main() -> None:
         ignore_related   = actor_input.get("ignore_related", "")
         max_jobs         = int(actor_input.get("max_jobs", 50))
         per_company_jobs = int(actor_input.get("per_company_jobs", 5))
-        concurrency      = min(int(actor_input.get("concurrency", 15)), ScraperSettings.MAX_CONCURRENCY)
         min_match_pct    = int(actor_input.get("min_match_percentage", 0))
+
+        # ── Concurrency: split Firecrawl's total capacity fairly across every
+        # currently-active run (point 2 & 3). 1 run = 100%, 2 runs = ~50% each,
+        # 3 runs = ~33% each, etc. Never goes below 1.
+        active_runs = await run_registry.active_run_count()
+        fair_share  = max(1, firecrawl.max_concurrency // active_runs)
+        concurrency = min(int(actor_input.get("concurrency", 15)), fair_share)
+
+        Actor.log.info(
+            f"⚖️  {active_runs} run(s) active right now — this run gets "
+            f"{concurrency}/{firecrawl.max_concurrency} Firecrawl slot(s)"
+        )
 
         # ── Feature flags ─────────────────────────────────────────────────────
         scrape_company_details   = bool(actor_input.get("scrape_company_details", False))
@@ -122,7 +145,6 @@ async def main() -> None:
             sheet_name=sheet_name,
         )
 
-
         await showstartinginfo(config)
 
         # ── Shared queues ─────────────────────────────────────────────────────
@@ -148,7 +170,7 @@ async def main() -> None:
 
         Actor.log.info(
             f"🚀 Launching {concurrency} listing + {concurrency} processing workers "
-            f"via Bright Data Web Unlocker API"
+            f"via Firecrawl ({len(firecrawl.active_accounts)} account(s) active)"
         )
 
         # ── Shared aiohttp session (one for all workers) ──────────────────────
@@ -162,11 +184,9 @@ async def main() -> None:
 
             if concurrency <= 5:
                 n_primary = 1
-                print(n_primary)
             else:
                 n_primary = 2
-                print(n_primary)
-            n_hybrid  = concurrency - n_primary           
+            n_hybrid = concurrency - n_primary
 
             primary_listing_tasks = [
                 asyncio.create_task(

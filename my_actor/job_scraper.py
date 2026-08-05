@@ -15,14 +15,15 @@ from datetime import datetime, timezone
 import aiohttp
 from apify import Actor
 from bs4 import BeautifulSoup
-
+from .firecrawl_client import firecrawl as evomi
 from .config import ScraperSettings
 from .helpers import (
     ScraperConfig,
     push_job_data,
     check_remote_status,
+    save_debug_html
 )
-from .brightdata import rotator
+
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
 
 
@@ -204,7 +205,7 @@ async def process_filter_jobs(
     html: str | None = None
     for attempt in range(ScraperSettings.MAX_RETRIES):
         try:
-            html = await rotator.fetch(url, session)
+            html = await evomi.fetch(url, session)
             break
         except Exception as e:
             Actor.log.warning(f"⏳ Attempt {attempt + 1}/{ScraperSettings.MAX_RETRIES} failed: {url} | {e}")
@@ -266,9 +267,11 @@ async def process_filter_jobs(
 
         try:
             await push_job_data(data, config)
+            await config.increment_pushed(1)
             Actor.log.info(
                 f"✅ Extracted (json): {data['positionName']} @ {data['company']}"
                 + (f" → {percentage}%" if config.ai_matching_enabled else "")
+                + f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
             )
             return True
         except Exception as e:
@@ -290,8 +293,9 @@ async def process_filter_jobs(
         # Company
         company = _bs_company(soup)
         if not company:
-            Actor.log.warning(f"⚠️ No company found, re-queued: {url}")
-            await filter_queue.put((url, percentage))
+            # Actor.log.warning(f"⚠️ No company found: {url}")
+            await config.release_slot()
+            # save_debug_html(html, url, tag=f"w{random.randint(1,4444)}") 
             return False
         data["company"] = company
 
@@ -352,9 +356,11 @@ async def process_filter_jobs(
         }
 
         await push_job_data(data, config)
+        await config.increment_pushed(1)
         Actor.log.info(
             f"✅ Extracted (dom): {data['positionName']} @ {data['company']}"
             + (f" → {percentage}%" if config.ai_matching_enabled else "")
+            + f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
         )
         return True
 

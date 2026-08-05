@@ -480,7 +480,8 @@ async def flush_batch(
         if accepted_links:
             Actor.log.info(
                 f"✅ Scorer accepted {len(accepted_links)}/{len(passed_links)} jobs"
-                f"  |  total: {config.extracted_jobs_counter}/{config.max_jobs}"
+                f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
+                f"  |  saved: {config.extracted_jobs_counter}/{config.max_jobs}"
             )
 
     await config.buffer_uids(batch_uids)
@@ -488,7 +489,26 @@ async def flush_batch(
         uids_to_save = await config.flush_uid_buffer()
         await update_processed_uids(uids_to_save)
 
+import itertools
 
+_debug_counter = itertools.count(1)
+
+def save_debug_html(html: str, url: str, tag: str = "page") -> None:
+    """Dump raw HTML to ./debug_html/ so you can open it in a browser."""
+    if not ScraperSettings.DEBUG_SAVE_HTML:
+        return
+    os.makedirs(ScraperSettings.DEBUG_HTML_DIR, exist_ok=True)
+    n = next(_debug_counter)
+    safe_url = re.sub(r'[^a-zA-Z0-9]+', '_', url)[:80]
+    filename = f"{n:04d}_{tag}_{safe_url}.html"
+    path = os.path.join(ScraperSettings.DEBUG_HTML_DIR, filename)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+        Actor.log.info(f"💾 Saved debug HTML → {path}")
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not save debug HTML: {e}")
+        
 async def _flush_shared_batch(
     config: "ScraperConfig",
     batch_positions: list,
@@ -548,6 +568,15 @@ class ScraperConfig:
     ignored_companies_seen:     Set[str]   = field(default_factory=set)
     new_processed_company_jobs: List[str]  = field(default_factory=list)
     extracted_jobs_counter:     int        = field(default=0, init=False)
+    # Total jobs actually handed off to filter_queue (i.e. accepted by the
+    # scorer and given a slot). Listing workers check THIS — not
+    # extracted_jobs_counter — to decide when to stop crawling more listing
+    # pages, because extracted_jobs_counter can later be decremented by
+    # release_slot() when an individual job page fails to extract (e.g. "no
+    # company found"). Using extracted_jobs_counter for that stop condition
+    # would make listing workers think there's still room and keep crawling
+    # forever near the max_jobs boundary. pushed_jobs only ever goes up.
+    pushed_jobs:                int        = field(default=0, init=False)
     _saved_jobs:                List[dict] = field(default_factory=list, init=False)
 
     _last_page_start: Dict[str, int] = field(default_factory=dict, init=False)
@@ -639,6 +668,12 @@ class ScraperConfig:
             accepted_count = min(len(links), remaining)
             self.extracted_jobs_counter += accepted_count
             return links[:accepted_count], percentages[:accepted_count]
+
+    async def increment_pushed(self, n: int) -> None:
+        if n <= 0:
+            return
+        async with self.tracking_lock:
+            self.pushed_jobs += n
 
     async def release_slot(self) -> None:
         async with self.tracking_lock:
