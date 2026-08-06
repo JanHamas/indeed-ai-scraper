@@ -15,6 +15,7 @@ class ScraperSettings:
         "jansudais5544": "fc-52c46a829e8a4138bdf700d96f8fa926",
         "janharis41": "fc-aa0fddaa2e854e1c922d18ca2589f7b3",
         "perveen": "fc-1ba3c6f6002a475894d73dc252f5b407",
+        "hamasjan833": "fc-c343b0a08ac04a378111701f5f1140bd",
     }
 
     # ── Debugging ───────────────────────────────────────────────────────

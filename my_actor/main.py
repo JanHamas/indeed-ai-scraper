@@ -38,10 +38,10 @@ async def main() -> None:
         finally:
             await run_registry.leave()
 
-
+import time
 async def _run() -> None:
         actor_input = await Actor.get_input() or {}
-
+        start_time = time.perf_counter()
         # ── Core config ───────────────────────────────────────────────────────
         url_queue_raw    = actor_input.get("start_urls", [])
         about_me         = actor_input.get("about_me", "").strip()
@@ -272,3 +272,5 @@ async def _run() -> None:
             Actor.log.info("⏭️ No Google Sheet URL — skipping upload")
 
         Actor.log.info("✅ Actor finished successfully")
+        Actor.log.info(f"Total time taken: {time.perf_counter() - start}")
+        

@@ -337,7 +337,7 @@ async def hybrid_listing_worker(
 
     try:
         Actor.log.info(f"Hybrid listing worker {worker_id} switched to processing."
-                       f"url_queue empty: {url_queue.empty()} | extracted_job_counter: {config.extracted_jobs_counter} | is_limit: {await config.is_limit_reached()}")
+                       f"url_queue empty: {url_queue.empty()} | is_limit: {await config.is_limit_reached()}")
         await _run_processing_phase(config, url_queue, filter_queue, worker_id, session)
     except Exception as e:
         Actor.log.error(f"❌ Worker {worker_id} processing phase failed: {e}")
