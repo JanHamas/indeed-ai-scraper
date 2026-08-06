@@ -293,8 +293,8 @@ async def process_filter_jobs(
         # Company
         company = _bs_company(soup)
         if not company:
-            # Actor.log.warning(f"⚠️ No company found: {url}")
             await config.release_slot()
+            Actor.log.warning(f"⚠️ No company found: {url}")
             # save_debug_html(html, url, tag=f"w{random.randint(1,4444)}") 
             return False
         data["company"] = company
