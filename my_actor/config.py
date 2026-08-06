@@ -9,13 +9,32 @@ load_dotenv()
 class ScraperSettings:
     # Firecrawl accounts — add more anytime, concurrency scales automatically
     accounts = {
-        "hamasjan82": "fc-fbe422c6b17045469b6f2ec420cc10f7",
-        "hamasjan33": "fc-48975577169e406e9ad9d8c2fd6dde85",
-        "janharis4455": "fc-9db9a27613c64fa0abf0f83fb0f452b8",
-        "jansudais5544": "fc-52c46a829e8a4138bdf700d96f8fa926",
-        "janharis41": "fc-aa0fddaa2e854e1c922d18ca2589f7b3",
-        "perveen": "fc-1ba3c6f6002a475894d73dc252f5b407",
+        # credits being refreshed on Sep 6, 2026
+        "janabubakar4455": "fc-3adec90e4a6549b5b5f95c76444466cc", # 
+        "ahaidbutt7@gmail.com": "fc-7529f5ede73a47a8a3b46c9bf5c77a23",
+        "ahsanraza555.dev@gmail.com": "fc-b0e54a3decbe4b40bb72666d616d9ba6",
+        "babarrehman1970@gmail.com": "fc-ca5bdae691f54a5d9a1721a1406b392c",
+        "hamasjan82": "fc-9db9a27613c64fa0abf0f83fb0f452b8",
         "hamasjan833": "fc-c343b0a08ac04a378111701f5f1140bd",
+        "hamasjan33": "fc-fc-4201546df046413db01894d8765b2a85",
+        "hamasjan4455": "fc-52c46a829e8a4138bdf700d96f8fa926",
+        "jansudais5544": "fc-fbe422c6b17045469b6f2ec420cc10f7",
+        "shumailaakhan5544@gmail.com": "fc-1784f1814d0f4c62924d61212fd68baf",
+        "p98632838@gmail.com": "fc-1ba3c6f6002a475894d73dc252f5b407",
+        "m.naqqashthr@gmail.com": "fc-00723e0617c14a51bafb99d351ff1c22",
+        "khurshidsherani.dev@gmail.com": "fc-879d14a1d2c346ab860002d2749a7ac8",
+        "janharis41": "fc-aa0fddaa2e854e1c922d18ca2589f7b3",
+        "janharis5544": "fc-48975577169e406e9ad9d8c2fd6dde85",
+        "hamasjan.dev": "fc-94392866e4bc4b88b322262d38dbc663",
+        "hamasjan859": "fc-edd9b5385a414dd1881e207f5b592c22",
+        "hamasjan281": "fc-30624786ec6f4b1e8807ee0daa8a4e33",
+        "hamasjan75": "fc-c28924c3dbd143e8b1ae45fbeaed5ec6",
+        "mnaqqashtahir": "fc-6eddf1fcff0444d4acd03f8b090cedfb",
+        "jawadqayyum.dev": "fc-9905f7f56ac74b1d98f2e55d7510afaa",
+        "hamasjan160@gmail.com": "fc-f5a0e70bd331465ba02fd96b22c7e66a",
+        "hamasjan74@gmail.com": "fc-885e5a645e9d4819b1e74349d9e9bcba",
+        "hamasjan822": "fc-6e047438346e422f8802cbd63a17eaab",
+        "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564"
     }
 
     # ── Debugging ───────────────────────────────────────────────────────
