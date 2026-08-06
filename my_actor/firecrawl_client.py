@@ -116,7 +116,7 @@ class FirecrawlClient:
                         continue  # try again with a different account
 
                     if resp.status == 429:
-                        Actor.log.info(f"⏳ '{account.name}' hit its rate limit, waiting a bit…")
+                        # Actor.log.info(f"⏳ '{account.name}' hit its rate limit, waiting a bit…")
                         await asyncio.sleep(5)
                         continue
 

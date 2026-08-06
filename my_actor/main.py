@@ -232,7 +232,7 @@ async def _run() -> None:
                         worker_id=concurrency + i,
                     )
                 )
-                for i in range(concurrency)
+                for i in range(concurrency*2)
             ]
 
             results = await asyncio.gather(
