@@ -179,7 +179,7 @@
       "title": "Concurrency (advanced)",
       "type": "integer",
       "description": "Number of parallel browser workers per phase (listing + processing).",
-      "default": 10,
+      "default": 5,
       "minimum": 1,
       "maximum": 10
     }

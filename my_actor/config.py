@@ -2,7 +2,6 @@
 my_actor/config.py
 Firecrawl accounts and scraper limits.
 """
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
