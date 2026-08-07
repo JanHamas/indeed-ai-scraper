@@ -4,6 +4,7 @@ Google Sheets upload — service account mode (credentials hardcoded per user re
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -24,6 +25,19 @@ _SERVICE_ACCOUNT_INFO = {
     "universe_domain": "googleapis.com",
 }
 
+# ── All fields we want written to the sheet, in column order. Supports
+# "parent/child" paths (e.g. "searchInput/country") to pull a value out of
+# a nested dict without flattening the whole job record. ────────────────────
+EXTRACTION_FIELDS: list[str] = [
+    "id", "url", "positionName", "company", "companyIndeedUrl",
+    "location", "salary", "jobType", "isRemote", "description",
+    "descriptionHTML", "postedAt", "postingDateParsed", "applyType",
+    "externalApplyLink", "benefits", "rating", "reviewsCount",
+    "isExpired", "jobMatch", "scrapedAt",
+    "searchInput/country", "searchInput/location", "searchInput/position",
+    "searchInput",
+]
+
 
 def _extract_workbook_id(link: str) -> str | None:
     match = re.search(r"/d/([a-zA-Z0-9-_]+)", link)
@@ -33,20 +47,56 @@ def _extract_workbook_id(link: str) -> str | None:
     return wb_id if len(wb_id) >= 33 else None
 
 
+def _get_field(job: dict, field: str) -> Any:
+    """Look up `field` on `job`, supporting 'parent/child' nested paths."""
+    if "/" in field:
+        parent, child = field.split("/", 1)
+        parent_val = job.get(parent)
+        if isinstance(parent_val, dict):
+            return parent_val.get(child, "")
+        return ""
+    return job.get(field, "")
+
+
+def _cell_value(value: Any) -> str:
+    """Coerce any job field value into something Sheets can display."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return str(value)
+    return str(value)
+
+
+def _job_to_row(job: dict) -> list[str]:
+    return [_cell_value(_get_field(job, field)) for field in EXTRACTION_FIELDS]
+
+
 async def upload_to_google_sheet(
     link: str,
     jobs: list[dict],
     log: Any,
 ) -> None:
-    sheet_name = "Indeed_jobs"
     """
     Upload scraped jobs to a Google Sheet via service account.
     Users must share their sheet with:
       python-api@indeed-leads-467810.iam.gserviceaccount.com  (Editor)
+
+    Every job in `jobs` gets a row, regardless of its `applyType` — jobs are
+    just grouped (Easy Apply, then CS Apply, then everything else) and
+    sorted by jobMatch within each group for readability. Nothing is
+    dropped for not matching an expected applyType value.
     """
+    sheet_name = "Indeed_jobs"
+
     wb_id = _extract_workbook_id(link)
     if not wb_id:
         log.error(f"❌ Invalid Google Sheet URL — cannot extract workbook ID: {link}")
+        return
+
+    if not jobs:
+        log.warning("⚠️ No jobs to upload to Google Sheets")
         return
 
     try:
@@ -59,54 +109,42 @@ async def upload_to_google_sheet(
         )
         return
 
-    extraction_fields = [
-        "positionName", "company", "url", "salary", "jobType", "isRemote",
-        "location", "applyType", "benefits", "description", "rating",
-        "reviewsCount", "jobMatch", "id", "externalApplyLink",
-        "isExpired", "postedAt",
-    ]
-
-    easy_jobs = sorted(
-        [j for j in jobs if j.get("applyType") == "Easy Apply"],
-        key=lambda j: j.get("jobMatch", 0), reverse=True,
-    )
-    cs_jobs = sorted(
-        [j for j in jobs if j.get("applyType") == "CS Apply"],
-        key=lambda j: j.get("jobMatch", 0), reverse=True,
-    )
-
     try:
         worksheet = workbook.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
         worksheet = workbook.add_worksheet(title=sheet_name, rows=5000, cols=40)
         log.info(f"📰 Created new worksheet: {sheet_name}")
 
-    def jobs_to_rows(job_list: list[dict]) -> list[list]:
-        rows = []
-        for job in job_list:
-            row = []
-            for f in extraction_fields:
-                val = job.get(f, "")
-                if isinstance(val, dict):
-                    val = str(val)
-                elif isinstance(val, bool):
-                    val = str(val)
-                row.append(val if val is not None else "")
-            rows.append(row)
-        return rows
+    def sort_key(job: dict) -> float:
+        try:
+            return float(job.get("jobMatch") or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
-    header = extraction_fields
-    all_rows = [header]
-    if easy_jobs:
-        all_rows.append(["── Easy Apply ──"] + [""] * (len(header) - 1))
-        all_rows.extend(jobs_to_rows(easy_jobs))
-    if cs_jobs:
-        all_rows.append(["── CS Apply ──"] + [""] * (len(header) - 1))
-        all_rows.extend(jobs_to_rows(cs_jobs))
+    easy_jobs  = sorted((j for j in jobs if j.get("applyType") == "Easy Apply"), key=sort_key, reverse=True)
+    cs_jobs    = sorted((j for j in jobs if j.get("applyType") == "CS Apply"), key=sort_key, reverse=True)
+    seen_ids   = {id(j) for j in easy_jobs} | {id(j) for j in cs_jobs}
+    other_jobs = sorted((j for j in jobs if id(j) not in seen_ids), key=sort_key, reverse=True)
+
+    header = EXTRACTION_FIELDS
+    all_rows: list[list[str]] = [header]
+
+    def add_group(label: str, group: list[dict]) -> None:
+        if not group:
+            return
+        all_rows.append([f"── {label} ──"] + [""] * (len(header) - 1))
+        all_rows.extend(_job_to_row(job) for job in group)
+
+    add_group("Easy Apply", easy_jobs)
+    add_group("CS Apply", cs_jobs)
+    add_group("Other", other_jobs)
 
     try:
         worksheet.clear()
         worksheet.update("A1", all_rows)
-        log.info(f"✅ Uploaded {len(jobs)} jobs to Google Sheets tab '{sheet_name}'")
+        log.info(
+            f"✅ Uploaded {len(jobs)} jobs to Google Sheets tab '{sheet_name}' "
+            f"({len(easy_jobs)} Easy Apply, {len(cs_jobs)} CS Apply, {len(other_jobs)} other)"
+        )
     except Exception as e:
         log.error(f"❌ Failed to write to Google Sheet: {e}")
