@@ -88,7 +88,7 @@
       "title": "Companies to Skip (optional)",
       "type": "string",
       "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
-      "editor": "stringList",
+      "editor": "textarea",
       "prefill": []
       
     },
