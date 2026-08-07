@@ -24,6 +24,7 @@ from .helpers import (
     _flush_shared_batch,
     sanitize_indeed_url,
     get_about_me,
+    _get_matcher,
 )
 from .workers import primary_listing_worker, hybrid_listing_worker, processing_worker
 from .gsheet import upload_to_google_sheet
@@ -162,7 +163,7 @@ async def _run() -> None:
 
     # ── AI matching free-text: prefer the user's keyword lines; fall back
     # to the `q=` term on every search URL.
-    has_raw_start_urls = bool(url_queue_raw)   # True if the user filled in 
+    has_raw_start_urls = bool(url_queue_raw)   # True if the user filled in
     about_me = get_about_me(search_keywords, url_list, has_raw_start_urls=has_raw_start_urls)
 
     # ── Build config ─────────────────────────────────────────────────────
@@ -250,6 +251,18 @@ async def _scrape(config) -> None:
     for start, url in paginated_urls:
         await url_queue.put((start, url))
 
+    # ── Warm up the AI matching model in the background, in parallel with
+    # the first listing page fetches. With the model baked into the Docker
+    # image at build time, this is now just an in-memory load (a few
+    # seconds) rather than a cold network download — but we still don't
+    # want the first flush_batch() call to be the one paying that cost
+    # serially and blocking the pipeline. If AI matching is off, or
+    # about_me ends up empty, config.ai_matching_enabled is False and this
+    # is a no-op — no torch/sentence-transformers import happens at all.
+    warmup_task = None
+    if config.ai_matching_enabled:
+        warmup_task = asyncio.create_task(_get_matcher())
+
     batch_positions: list[str] = []
     batch_links:     list[str] = []
     batch_uids:      list[str] = []
@@ -330,6 +343,17 @@ async def _scrape(config) -> None:
 
         stop_event.set()
         await status_task
+
+        # ── Make sure the warm-up task is settled before we finish up.
+        # In the normal case it completed ages ago (it only needed a few
+        # seconds, workers ran for much longer) — this just surfaces any
+        # load error explicitly instead of letting it resurface later,
+        # confusingly, inside a flush_batch() call.
+        if warmup_task:
+            try:
+                await warmup_task
+            except Exception as e:
+                Actor.log.warning(f"⚠️ Model warm-up task failed: {e}")
 
     # ── Final flush ──────────────────────────────────────────────────────
     await _flush_shared_batch(

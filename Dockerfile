@@ -1,18 +1,9 @@
-# First, specify the base Docker image.
-# You can see the Docker images from Apify at https://hub.docker.com/r/apify/.
-# You can also use any other image from Docker Hub.
 FROM apify/actor-python:3.14
 
 USER myuser
 
-# Second, copy just requirements.txt into the Actor image,
-# since it should be the only file that affects the dependency install in the next step,
-# in order to speed up the build
 COPY --chown=myuser:myuser requirements.txt ./
 
-# Install the packages specified in requirements.txt,
-# Print the installed Python version, pip version
-# and all installed packages with their versions for debugging
 RUN echo "Python version:" \
  && python --version \
  && echo "Pip version:" \
@@ -22,13 +13,22 @@ RUN echo "Python version:" \
  && echo "All installed Python packages:" \
  && pip freeze
 
-# Next, copy the remaining files and directories with the source code.
-# Since we do this after installing the dependencies, quick build will be really fast
-# for most source file changes.
+# ── Bake the AI-matching model into the image at build time, so runs
+# never pay a cold-download cost from Hugging Face Hub. Apify containers
+# are ephemeral — nothing persists between runs — so without this,
+# SemanticMatcher.__init__ re-downloads JobBERT-v2 on every single run,
+# which is the ~70s startup delay. Env vars keep the build log quiet and
+# fix a version-mismatch deprecation warning at the same time.
+ENV HF_HUB_DISABLE_PROGRESS_BARS=1 \
+    TRANSFORMERS_VERBOSITY=error \
+    TOKENIZERS_PARALLELISM=false
+
+RUN echo "Pre-downloading AI matching model into image layer:" \
+ && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('TechWolf/JobBERT-v2')" \
+ && echo "Model cached."
+
 COPY --chown=myuser:myuser . ./
 
-# Use compileall to ensure the runnability of the Actor Python code.
 RUN python -m compileall -q my_actor/
 
-# Specify how to launch the source code of your Actor.
 CMD ["python", "-m", "my_actor"]

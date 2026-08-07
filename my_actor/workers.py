@@ -93,8 +93,21 @@ async def primary_listing_worker(
     try:
         while True:
             # Stay alive for relisting if processing worker miss or skipp jobs eg, expired etc
-            if url_queue.empty() or config.pushed_jobs >= config.max_jobs:
+            # Done for real: we've already pushed everything required.
+            if config.pushed_jobs >= config.max_jobs:
                 break
+
+            # Nothing left to list — nothing more this worker can do.
+            if url_queue.empty():
+                break
+
+            # Slots are full right now, but the queue still has pages and
+            # pushed_jobs hasn't caught up — a release_slot() from a
+            # skipped/expired job downstream could free a slot. Wait
+            # instead of exiting, then re-check.
+            if await config.is_limit_reached():
+                await asyncio.sleep(.5)
+                continue
         
             try:
                 start, job_search_url = url_queue.get_nowait()
