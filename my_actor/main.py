@@ -83,7 +83,6 @@ async def _run() -> None:
 
         # ── Google Sheets ─────────────────────────────────────────────────────
         google_sheet_url = actor_input.get("google_sheet_url", "")
-        sheet_name       = actor_input.get("sheet_name", "Indeed Jobs")
 
         # ── Processed job URLs → extract IDs to skip ─────────────────────────
         processed_urls_raw: list = actor_input.get("processed_job_urls", [])
@@ -154,7 +153,6 @@ async def _run() -> None:
             skip_expired_jobs=skip_expired_jobs,
             skip_ignore_related_jobs=skip_ignore_related_jobs,
             google_sheet_url=google_sheet_url,
-            sheet_name=sheet_name,
         )
 
         await showstartinginfo(config)
@@ -289,7 +287,6 @@ async def _run() -> None:
                 Actor.log.info(f"📊 Uploading {len(config._saved_jobs)} jobs to Google Sheets…")
                 await upload_to_google_sheet(
                     link=gs_url,
-                    sheet_name=config.sheet_name,
                     jobs=config._saved_jobs,
                     log=Actor.log,
                 )

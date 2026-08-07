@@ -658,7 +658,6 @@ class ScraperConfig:
 
     # Google Sheets
     google_sheet_url: str = ""
-    sheet_name:       str = "Indeed Jobs"
 
     # Runtime state
     processed_uids: Set[str] = field(default_factory=set)
@@ -832,7 +831,6 @@ def load_scraper_config(
     skip_ignore_related_jobs: bool,
     ai_matching_enabled:      bool = True,
     google_sheet_url:         str  = "",
-    sheet_name:               str  = "Indeed Jobs",
 ) -> ScraperConfig:
     ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
     ignore_related   = [kw.strip().lower() for kw in ignore_related_raw.splitlines() if kw.strip()]
@@ -855,7 +853,6 @@ def load_scraper_config(
         skip_expired_jobs=skip_expired_jobs,
         skip_ignore_related_jobs=skip_ignore_related_jobs,
         google_sheet_url=google_sheet_url,
-        sheet_name=sheet_name,
         processed_uids=processed_uids,
     )
 
