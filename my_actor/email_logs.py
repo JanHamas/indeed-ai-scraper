@@ -86,6 +86,18 @@ def build_run_summary(
     lines.append(f"Duration: {_format_duration(start_time)}")
     lines.append(f"Status:   {run_status}")
 
+    # ── Plan / billing — always shown so free-tier users know why their
+    # run was capped, instead of just seeing a lower job count with no
+    # explanation. ──────────────────────────────────────────────────────
+    is_paying = getattr(config, "is_paying", True)
+    if not is_paying:
+        lines.append(
+            f"Plan:     🆓 FREE TIER — capped at "
+            f"{ScraperSettings.FREE_TIER_MAX_JOBS} jobs/run"
+        )
+    else:
+        lines.append("Plan:     💳 Paid")
+
     lines.append("")
     lines.append("STATISTICS")
     lines.append(f"  Jobs extracted:   {config.extracted_jobs_counter}/{config.max_jobs}")
@@ -127,7 +139,7 @@ def build_run_summary(
     lines.append(f"  Skip expired jobs:      {'ON' if getattr(config, 'skip_expired_jobs', False) else 'OFF'}")
     lines.append(f"  Skip ignore-related:    {'ON' if getattr(config, 'skip_ignore_related_jobs', False) else 'OFF'}")
 
-   
+
     if config.ignored_companies_seen:
         ignored = sorted(config.ignored_companies_seen)
         lines.append("")

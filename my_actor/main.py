@@ -33,22 +33,9 @@ PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 # ── Free-tier limit: Apify accounts on the free plan (isPaying == False)
 # never get more than this many jobs per run, no matter what max_jobs they
 # ask for. ────────────────────────────────────────────────────────────────
-FREE_TIER_MAX_JOBS = 20
+FREE_TIER_MAX_JOBS = 200
 
-
-async def _resolve_max_jobs(requested_max_jobs: int) -> int:
-    """
-    Cap `requested_max_jobs` at FREE_TIER_MAX_JOBS for users on Apify's free
-    plan. Paying users (isPaying == True) get whatever they asked for.
-
-    `isPaying` is one of the few user fields NOT stripped out when this API
-    call is made from inside an Actor run (unlike `plan`, `email`, and
-    `profile`, which are omitted) — see:
-    https://docs.apify.com/api/v2/users-me-get
-
-    If the API call fails for any reason, we fail closed (treat the user as
-    free-tier) rather than silently letting an unverified user past the cap.
-    """
+async def _resolve_max_jobs(requested_max_jobs: int) -> tuple[int, bool]:
     try:
         me = await Actor.apify_client.user("me").get()
         is_paying = bool((me or {}).get("isPaying", False))
@@ -58,16 +45,21 @@ async def _resolve_max_jobs(requested_max_jobs: int) -> int:
 
     if is_paying:
         Actor.log.info(f"💳 Paid Apify plan detected — max_jobs stays at {requested_max_jobs}")
-        return requested_max_jobs
+        return requested_max_jobs, True
 
-    if requested_max_jobs > FREE_TIER_MAX_JOBS:
-        Actor.log.info(
-            f"🆓 Free-tier Apify account — capping max_jobs at "
-            f"{FREE_TIER_MAX_JOBS} (requested {requested_max_jobs})"
-        )
-        return FREE_TIER_MAX_JOBS
+    effective = min(requested_max_jobs, ScraperSettings.FREE_TIER_MAX_JOBS)
+    Actor.log.info("=" * 80)
+    Actor.log.info(f"🆓 FREE-TIER APIFY ACCOUNT — max {ScraperSettings.FREE_TIER_MAX_JOBS} jobs per run")
+    Actor.log.info(f"   ↳ This run will collect up to {effective} job(s)")
+    if requested_max_jobs > ScraperSettings.FREE_TIER_MAX_JOBS:
+        Actor.log.info(f"   ↳ You requested {requested_max_jobs} — upgrade your plan to raise this limit")
+    Actor.log.info("=" * 80)
 
-    return requested_max_jobs
+    await Actor.set_status_message(
+        f"🆓 Free-tier account: capped at {ScraperSettings.FREE_TIER_MAX_JOBS} jobs/run "
+        f"(this run: {effective})"
+    )
+    return effective, False
 
 
 async def main() -> None:
@@ -90,7 +82,7 @@ async def _run() -> None:
     url_queue_raw    = actor_input.get("start_urls", [])
     ignore_companies = actor_input.get("ignore_companies", "")
     ignore_related   = actor_input.get("ignore_related", "")
-    max_jobs         = await _resolve_max_jobs(int(actor_input.get("max_jobs", 50)))
+    max_jobs, is_paying = await _resolve_max_jobs(int(actor_input.get("max_jobs", 50)))
     per_company_jobs = int(actor_input.get("per_company_jobs", 5))
     min_match_pct    = int(actor_input.get("min_match_percentage", 0))
 
@@ -194,6 +186,7 @@ async def _run() -> None:
         skip_expired_jobs=skip_expired_jobs,
         skip_ignore_related_jobs=skip_ignore_related_jobs,
         google_sheet_url=google_sheet_url,
+        is_paying=is_paying,
     )
 
     await showstartinginfo(config)

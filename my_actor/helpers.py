@@ -829,6 +829,7 @@ def load_scraper_config(
     skip_expired_jobs:        bool,
     skip_ignore_related_jobs: bool,
     ai_matching_enabled:      bool = True,
+    is_paying: bool = True,
     google_sheet_url:         str  = "",
 ) -> ScraperConfig:
     ignore_companies = [c.strip().lower() for c in ignore_companies_raw.splitlines() if c.strip()]
@@ -853,6 +854,7 @@ def load_scraper_config(
         skip_ignore_related_jobs=skip_ignore_related_jobs,
         google_sheet_url=google_sheet_url,
         processed_uids=processed_uids,
+        is_paying=is_paying,
     )
 
 
@@ -861,6 +863,8 @@ def load_scraper_config(
 # ─────────────────────────────────────────────────────────────────────────────
 async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info("=" * 80)
+    if not config.is_paying:
+        Actor.log.info(f"🆓 FREE-TIER APIFY ACCOUNT — capped at {config.max_jobs} jobs this run")
     Actor.log.info(f"🎯 Max jobs:            {config.max_jobs}")
     Actor.log.info(f"🔗 Search URLs:         {len(config.url_queue)}")
     if config.search_keywords:
