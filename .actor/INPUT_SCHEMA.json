@@ -17,13 +17,29 @@
       "type": "string",
       "description": "The country to search on Indeed. Determines which Indeed domain is used (e.g. indeed.com, uk.indeed.com).",
       "editor": "select",
-      "enum": ["us", "uk", "ca", "au", "in", "de", "fr", "sg", "pk", "nl", "es", "it", "br", "mx", "nz", "jp", "ae", "sa"],
+      "enum": [
+        "us", "ae", "ar", "at", "au", "be", "bh", "br", "ca", "ch",
+        "cl", "cn", "co", "cr", "cz", "de", "dk", "ec", "eg", "es",
+        "fi", "fr", "gb", "gr", "hk", "hu", "id", "ie", "il", "in",
+        "it", "jp", "kr", "kw", "lu", "ma", "mx", "my", "ng", "nl",
+        "no", "nz", "om", "pa", "pe", "ph", "pk", "pl", "pt", "qa",
+        "ro", "ru", "sa", "se", "sg", "th", "tr", "tw", "ua", "uy",
+        "ve", "vn", "za"
+      ],
       "enumTitles": [
-        "🇺🇸 United States", "🇬🇧 United Kingdom", "🇨🇦 Canada", "🇦🇺 Australia",
-        "🇮🇳 India", "🇩🇪 Germany", "🇫🇷 France", "🇸🇬 Singapore",
-        "🇵🇰 Pakistan", "🇳🇱 Netherlands", "🇪🇸 Spain", "🇮🇹 Italy",
-        "🇧🇷 Brazil", "🇲🇽 Mexico", "🇳🇿 New Zealand", "🇯🇵 Japan",
-        "🇦🇪 UAE", "🇸🇦 Saudi Arabia"
+        "🇺🇸 United States", "🇦🇪 United Arab Emirates", "🇦🇷 Argentina", "🇦🇹 Austria", "🇦🇺 Australia",
+        "🇧🇪 Belgium", "🇧🇭 Bahrain", "🇧🇷 Brazil", "🇨🇦 Canada", "🇨🇭 Switzerland",
+        "🇨🇱 Chile", "🇨🇳 China", "🇨🇴 Colombia", "🇨🇷 Costa Rica", "🇨🇿 Czechia",
+        "🇩🇪 Germany", "🇩🇰 Denmark", "🇪🇨 Ecuador", "🇪🇬 Egypt", "🇪🇸 Spain",
+        "🇫🇮 Finland", "🇫🇷 France", "🇬🇧 United Kingdom", "🇬🇷 Greece", "🇭🇰 Hong Kong",
+        "🇭🇺 Hungary", "🇮🇩 Indonesia", "🇮🇪 Ireland", "🇮🇱 Israel", "🇮🇳 India",
+        "🇮🇹 Italy", "🇯🇵 Japan", "🇰🇷 South Korea", "🇰🇼 Kuwait", "🇱🇺 Luxembourg",
+        "🇲🇦 Morocco", "🇲🇽 Mexico", "🇲🇾 Malaysia", "🇳🇬 Nigeria", "🇳🇱 Netherlands",
+        "🇳🇴 Norway", "🇳🇿 New Zealand", "🇴🇲 Oman", "🇵🇦 Panama", "🇵🇪 Peru",
+        "🇵🇭 Philippines", "🇵🇰 Pakistan", "🇵🇱 Poland", "🇵🇹 Portugal", "🇶🇦 Qatar",
+        "🇷🇴 Romania", "🇷🇺 Russia", "🇸🇦 Saudi Arabia", "🇸🇪 Sweden", "🇸🇬 Singapore",
+        "🇹🇭 Thailand", "🇹🇷 Türkiye", "🇹🇼 Taiwan", "🇺🇦 Ukraine", "🇺🇾 Uruguay",
+        "🇻🇪 Venezuela", "🇻🇳 Vietnam", "🇿🇦 South Africa"
       ],
       "default": "us"
     },
@@ -66,13 +82,13 @@
       "description": "Only used when AI matching is enabled and search_keywords is filled in. Jobs scoring below this threshold are skipped.\n\nLower = more results, less targeted. Higher = fewer but more relevant.\nRecommended: 40–90.",
       "default": 0,
       "minimum": 0,
-      "maximum": 100
+      "maximum": 90
     },
 
     "max_jobs": {
       "title": "📦 Total Jobs to Collect",
       "type": "integer",
-      "description": "The scraper stops once it has saved this many jobs total (across all keywords/URLs). Recommended: 50–500.",
+      "description": "The scraper stops once it has saved this many jobs total (across all keywords/URLs).",
       "default": 50,
       "minimum": 1
     },
@@ -94,9 +110,9 @@
     },
 
     "scrape_company_details": {
-      "title": "🏭 Scrape Company Details",
+      "title": "🏭 Scrape Company Details (feature currently unavailable)",
       "type": "boolean",
-      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so it will be slower and use more proxy bandwidth.",
+      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so scraper price pay per resuld would be double.",
       "default": false
     },
 
@@ -122,7 +138,7 @@
     },
 
     "follow_apply_redirect": {
-      "title": "🔗 Follow Redirects for Apply Link",
+      "title": "🔗 Follow Redirects for Apply Link (feature currently unavailable)",
       "type": "boolean",
       "description": "When enabled, the scraper resolves the external 'Apply on company site' link to its final destination URL (following all redirects). Useful when you want the real company careers page URL instead of Indeed's redirect.\n\nSlightly slower — only enable if you need resolved URLs.",
       "default": false
