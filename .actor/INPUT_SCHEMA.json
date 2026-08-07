@@ -81,7 +81,7 @@
       "type": "string",
       "description": "Paste Indeed job URLs you already scraped in a previous run. The scraper extracts job IDs from these and skips them — so you never collect the same job twice across multiple runs.\n\nPaste job URLs in the format:\nhttps://www.indeed.com/viewjob?jk=abc123def456",
       "editor": "textarea",
-      "prefill": []
+      "prefill": ""
     },
 
     "ignore_companies": {
@@ -89,13 +89,12 @@
       "type": "string",
       "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
       "editor": "textarea",
-      "prefill": []
-      
+      "prefill": ""
     },
 
     "ignore_related": {
       "title": "Keywords to Skip in Job Description (optional)",
-      "type": "string",
+      "type": "array",
       "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "stringList",
       "prefill": []
@@ -168,7 +167,7 @@
       "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so scraper price pay per resuld would be double.",
       "default": false
     },
-    
+
     "follow_apply_redirect": {
       "title": "Follow Redirects for Apply Link (feature currently unavailable)",
       "type": "boolean",
@@ -176,12 +175,11 @@
       "default": false
     },
 
-
     "concurrency": {
       "title": "Concurrency (advanced)",
       "type": "integer",
       "description": "Number of parallel browser workers per phase (listing + processing). Total browser contexts = concurrency × 2.\n\nMemory guide:\n  1 GB RAM  → use 2\n  2 GB RAM  → use 4\n  4 GB RAM  → use 8\n\nHigher = faster but uses more memory. OOM crashes if set too high for your memory allocation.",
-      "default": 10,
+      "default": 5,
       "minimum": 1,
       "maximum": 10
     }
