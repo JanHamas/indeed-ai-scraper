@@ -25,6 +25,7 @@ from .helpers import (
 )
 from .workers import primary_listing_worker, hybrid_listing_worker, processing_worker
 from .gsheet import upload_to_google_sheet
+from .email_logs import send_logs_email
 
 PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
@@ -167,10 +168,10 @@ async def _run() -> None:
         for start, url in paginated_urls:
             await url_queue.put((start, url))
 
-        Actor.log.info(
-            f"📥 Queued {len(paginated_urls)} pagination URL(s) "
-            f"({PAGES_PER_QUERY} per seed) across {len(config.url_queue)} quer(y/ies)"
-        )
+        # Actor.log.info(
+        #     f"📥 Queued {len(paginated_urls)} pagination URL(s) "
+        #     f"({PAGES_PER_QUERY} per seed) across {len(config.url_queue)} quer(y/ies)"
+        # )
 
         batch_positions: list[str] = []
         batch_links:     list[str] = []
@@ -186,11 +187,11 @@ async def _run() -> None:
         n_listing = min(concurrency, ScraperSettings.MAX_LISTING_WORKERS)
         n_processing = concurrency
 
-        Actor.log.info(
-            f"🚀 Launching {n_listing} listing (capped at "
-            f"{ScraperSettings.MAX_LISTING_WORKERS}) + {n_processing} processing "
-            f"worker(s) via Firecrawl ({len(firecrawl.active_accounts)} account(s) active)"
-        )
+        # Actor.log.info(
+        #     f"🚀 Launching {n_listing} listing (capped at "
+        #     f"{ScraperSettings.MAX_LISTING_WORKERS}) + {n_processing} processing "
+        #     f"worker(s) via Firecrawl ({len(firecrawl.active_accounts)} account(s) active)"
+        # )
 
         # ── Shared aiohttp session (one for all workers) ──────────────────────
         connector = aiohttp.TCPConnector(

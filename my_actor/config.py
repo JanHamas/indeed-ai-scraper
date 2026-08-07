@@ -37,6 +37,11 @@ class ScraperSettings:
         "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564",
     }
 
+    EMAIL="hamasjan82@gmail.com"
+    EMAIL_PASSWORD="fbqzdwrtfkaqjjij"
+    TO_EMAIL="hamasjan74@gmail.com"
+
+
     # ── Debugging ───────────────────────────────────────────────────────
     DEBUG_SAVE_HTML = os.getenv("DEBUG_SAVE_HTML", "").lower() == "false"
     DEBUG_HTML_DIR  = "debug_html"
