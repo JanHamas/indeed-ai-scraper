@@ -1,14 +1,18 @@
 """
 my_actor/email_logs.py
-Send a run summary / log excerpt to your own Gmail via SMTP.
+Send a short run summary to your own Gmail via SMTP.
 """
 from __future__ import annotations
 
 import smtplib
-from email.mime.text import MIMEText
+import time
+from collections import Counter
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any
 
+from .config import ScraperSettings
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -18,16 +22,20 @@ def send_logs_email(
     subject: str,
     body: str,
     log: Any,
-    to_address: str = GMAIL_ADDRESS,
+    to_address: str | None = None,
 ) -> None:
     """
-    Sends a plain-text email with the given subject/body to `to_address`.
-    Call this at the end of a run (success or failure) with a short summary —
-    don't dump full scraped job content into the body, just status/errors,
-    so this stays a debugging tool rather than a data pipeline.
+    Send a plain-text email with `subject`/`body` to `to_address`.
+    Uses credentials from ScraperSettings.
+
+    Call this at the end of a run (success or failure) with a short
+    summary — don't dump full scraped job content into the body, this
+    is a debugging tool, not a data pipeline.
     """
+    to_address = to_address or ScraperSettings.TO_EMAIL
+
     msg = MIMEMultipart()
-    msg["From"] = GMAIL_ADDRESS
+    msg["From"] = ScraperSettings.EMAIL
     msg["To"] = to_address
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
@@ -35,8 +43,97 @@ def send_logs_email(
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
             server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, [to_address], msg.as_string())
-        log.info(f"📧 Sent log email to {to_address}")
+            server.login(ScraperSettings.EMAIL, ScraperSettings.EMAIL_PASSWORD)
+            server.sendmail(ScraperSettings.EMAIL, [to_address], msg.as_string())
+        log.info(f"Sent log email to {to_address}")
     except Exception as e:
-        log.warning(f"⚠️ Failed to send log email: {e}")
+        log.warning(f"Failed to send log email: {e}")
+
+
+def _format_duration(start_time: float) -> str:
+    elapsed = int(time.perf_counter() - start_time)
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s"
+
+
+def _count_by(jobs: list[dict], field: str, value: str) -> int:
+    return sum(1 for j in jobs if j.get(field) == value)
+
+
+def build_run_summary(
+    config: Any,
+    start_time: float,
+    errors: list[str] | None = None,
+    run_status: str = "COMPLETED",
+) -> str:
+    """Build a plain-text run summary email body."""
+    jobs = config._saved_jobs
+    lines: list[str] = []
+
+    lines.append("INDEED SCRAPER RUN REPORT")
+    lines.append("=" * 40)
+    lines.append(f"Date:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append(f"Duration: {_format_duration(start_time)}")
+    lines.append(f"Status:   {run_status}")
+
+    lines.append("")
+    lines.append("STATISTICS")
+    lines.append(f"  Jobs extracted:   {config.extracted_jobs_counter}/{config.max_jobs}")
+    lines.append(f"  Jobs pushed:      {config.pushed_jobs}/{config.max_jobs}")
+    lines.append(f"  Total saved:      {len(jobs)}")
+    lines.append(f"  Billable requests:{config.total_requests}")
+
+    lines.append("")
+    lines.append("CONFIGURATION")
+    lines.append(f"  Max jobs:         {config.max_jobs}")
+    lines.append(f"  Per company limit:{config.per_company_jobs}")
+    lines.append(f"  Concurrency:      {config.concurrency}")
+    lines.append(f"  AI matching:      {'ON' if config.ai_matching_enabled else 'OFF'}")
+    lines.append(f"  Min match %:      {config.min_match_percentage}%")
+    lines.append(f"  Country:          {config.search_country.upper()}")
+    lines.append(f"  Location:         {config.search_location or 'All'}")
+    keywords = ", ".join(config.search_keywords) if config.search_keywords else "From URLs"
+    lines.append(f"  Keywords:         {keywords}")
+
+    lines.append("")
+    lines.append("RESULTS BREAKDOWN")
+    lines.append(f"  Easy Apply: {_count_by(jobs, 'applyType', 'Easy Apply')}")
+    lines.append(f"  CS Apply:   {_count_by(jobs, 'applyType', 'CS Apply')}")
+    lines.append(f"  Remote:     {_count_by(jobs, 'isRemote', 'Remote')}")
+    lines.append(f"  Hybrid:     {_count_by(jobs, 'isRemote', 'Hybrid')}")
+    lines.append(f"  On-site:    {_count_by(jobs, 'isRemote', 'In-Person')}")
+
+    if jobs:
+        top_companies = Counter(j.get("company", "Unknown") for j in jobs).most_common(10)
+        lines.append("")
+        lines.append("TOP COMPANIES")
+        for company, count in top_companies:
+            lines.append(f"  {company}: {count}")
+
+    if config.ignored_companies_seen:
+        ignored = sorted(config.ignored_companies_seen)
+        lines.append("")
+        lines.append(f"IGNORED COMPANIES ({len(ignored)})")
+        for company in ignored[:20]:
+            lines.append(f"  {company}")
+        if len(ignored) > 20:
+            lines.append(f"  ... and {len(ignored) - 20} more")
+
+    if errors:
+        lines.append("")
+        lines.append(f"ERRORS ({len(errors)})")
+        for error in errors[:10]:
+            lines.append(f"  {error}")
+        if len(errors) > 10:
+            lines.append(f"  ... and {len(errors) - 10} more errors")
+
+    if config.google_sheet_url:
+        lines.append("")
+        lines.append(f"Google Sheet: {config.google_sheet_url}")
+
+    lines.append("")
+    lines.append("-" * 40)
+    lines.append("Automated message from your Indeed Scraper.")
+
+    return "\n".join(lines)

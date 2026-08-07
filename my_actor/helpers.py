@@ -428,8 +428,7 @@ def clear_queue(q: asyncio.Queue) -> None:
             q.task_done()
         except asyncio.QueueEmpty:
             break
-
-
+        
 async def purge_queue_beyond(url_queue: asyncio.Queue, base_url: str, last_start: int) -> int:
     removed = 0
     keepers = []
