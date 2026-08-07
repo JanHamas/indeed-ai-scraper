@@ -16,7 +16,7 @@ class ScraperSettings:
         "babarrehman1970@gmail.com": "fc-ca5bdae691f54a5d9a1721a1406b392c",
         "hamasjan82": "fc-9db9a27613c64fa0abf0f83fb0f452b8",
         "hamasjan833": "fc-c343b0a08ac04a378111701f5f1140bd",
-        "hamasjan33": "fc-fc-4201546df046413db01894d8765b2a85",
+        "hamasjan33": "fc-4201546df046413db01894d8765b2a85",
         "hamasjan4455": "fc-52c46a829e8a4138bdf700d96f8fa926",
         "jansudais5544": "fc-fbe422c6b17045469b6f2ec420cc10f7",
         "shumailaakhan5544@gmail.com": "fc-1784f1814d0f4c62924d61212fd68baf",
@@ -34,7 +34,7 @@ class ScraperSettings:
         "hamasjan160@gmail.com": "fc-f5a0e70bd331465ba02fd96b22c7e66a",
         "hamasjan74@gmail.com": "fc-885e5a645e9d4819b1e74349d9e9bcba",
         "hamasjan822": "fc-6e047438346e422f8802cbd63a17eaab",
-        "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564"
+        "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564",
     }
 
     # ── Debugging ───────────────────────────────────────────────────────
@@ -45,6 +45,25 @@ class ScraperSettings:
     # `firecrawl.max_concurrency` (from firecrawl_client.py) wherever you
     # used to read ScraperSettings.MAX_CONCURRENCY — it's 10 x however many
     # accounts still have credit, and updates itself as accounts run out.
+
+    # ── Point 1 & 4: how many runs (users) may scrape at the same time ────
+    # This is the single source of truth for the cap. run_registry.py makes
+    # a run WAIT (poll) until fewer than this many runs are active before it
+    # is allowed to join. Once it joins, main.py splits Firecrawl's total
+    # capacity evenly across every currently-active run (1 run = 100%,
+    # 2 runs = ~50% each, ...), and a 3rd run queues behind the first two —
+    # that's the "chain" behavior.
+    CONCURRENT_MAX_USERS = 2
+    USER_QUEUE_POLL_SECONDS = 10   # how often a queued run rechecks for a free slot
+
+    # ── Point 3: hard cap on listing workers; processing workers are NOT
+    # capped by a fixed number — they scale with whatever Firecrawl capacity
+    # (`concurrency`, this run's fair share) is actually available. ────────
+    MAX_LISTING_WORKERS = 10
+
+    # ── Point 6: retry a job page this many times if no company name could
+    # be parsed off it, before giving up on it for good. ──────────────────
+    COMPANY_RETRY_LIMIT = 2
 
     REQUEST_TIMEOUT      = 120      # seconds per HTTP request
     MAX_RETRIES          = 3        # network-error retries

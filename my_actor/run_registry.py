@@ -20,6 +20,14 @@ How it works, in plain terms:
   checking out, its entry goes stale after 3 minutes and stops counting
   against everyone else's share — no manual cleanup, no 1-hour freeze
   like the old lock had.
+- NEW: `ScraperSettings.CONCURRENT_MAX_USERS` is now actually enforced.
+  `join()` will not register a run while that many OTHER runs are already
+  active — it polls every `USER_QUEUE_POLL_SECONDS` and waits its turn
+  instead. Once a slot frees up (someone finishes or goes stale), the
+  waiting run joins and immediately gets folded into the fair-share split
+  above. This is what makes user #3 (and beyond) queue in a chain behind
+  the first CONCURRENT_MAX_USERS runs, rather than piling on and diluting
+  everyone's share.
 
 NOTE: the split is calculated once at startup, not continuously
 rebalanced mid-run. If Run B joins while Run A is already going, Run A
@@ -36,6 +44,8 @@ import time
 import uuid
 
 from apify import Actor
+
+from .config import ScraperSettings
 
 REGISTRY_STORE_NAME = "scraper-registry"
 REGISTRY_KEY = "active_runs"
@@ -63,13 +73,34 @@ class RunRegistry:
         return {rid: ts for rid, ts in runs.items() if now - ts <= STALE_AFTER_SECONDS}
 
     async def join(self) -> None:
-        """Register this run as active. Call once at startup, before doing any work."""
+        """
+        Register this run as active. Call once at startup, before doing any
+        work. Blocks (polling) while `ScraperSettings.CONCURRENT_MAX_USERS`
+        other runs are already active — point 1 & 4.
+        """
         store = await self._get_store()
-        runs = await self._read_active(store)
+        announced_wait = False
+
+        while True:
+            runs = await self._read_active(store)
+            if self.run_id in runs or len(runs) < ScraperSettings.CONCURRENT_MAX_USERS:
+                break
+            if not announced_wait:
+                Actor.log.info(
+                    f"⏸️ {len(runs)} run(s) already active "
+                    f"(limit: {ScraperSettings.CONCURRENT_MAX_USERS}) — "
+                    f"run '{self.run_id}' is queued and will start as soon as "
+                    f"a slot frees up…"
+                )
+                announced_wait = True
+            await asyncio.sleep(ScraperSettings.USER_QUEUE_POLL_SECONDS)
+
         runs[self.run_id] = time.time()
         await store.set_value(REGISTRY_KEY, runs)
         self._joined = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat(store))
+        if announced_wait:
+            Actor.log.info(f"▶️ Slot freed — run '{self.run_id}' starting now")
         Actor.log.info(f"🙋 Registered run '{self.run_id}' — {len(runs)} run(s) active total")
 
     async def _heartbeat(self, store) -> None:

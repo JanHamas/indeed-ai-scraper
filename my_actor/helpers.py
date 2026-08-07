@@ -1,7 +1,7 @@
 """
 my_actor/helpers.py
 ScraperConfig dataclass, URL builders, HTML parsers, batch/queue utilities,
-and AI matching. No browser/Playwright code — all HTTP-based.
+and AI matching. all HTTP-based.
 """
 from __future__ import annotations
 
@@ -158,9 +158,9 @@ if os.getenv("APP_ENV") != "local":
 
 async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[float]:
     if not about_me or not about_me.strip():
-        return [100.0] * len(job_titles)
+        return [""] * len(job_titles)
     if os.getenv("APP_ENV") == "local":
-        return [random.randint(0, 100) for _ in range(len(job_titles))]
+        return [0 for _ in range(len(job_titles))]
     return await _matcher.match(about_me, job_titles)
 
 
@@ -194,8 +194,8 @@ def parse_listing_cards(html: str) -> list[dict]:
 
         raw_href = link_el.get("href", "")
 
-        if "pagead/clk" in raw_href:
-            continue
+        # if "pagead/clk" in raw_href:
+        #     continue
 
         uid = link_el.get("data-jk", "").strip()
         if not uid:
@@ -325,6 +325,39 @@ def extract_job_ids_from_urls(urls: list[str]) -> set[str]:
     if ids:
         Actor.log.info(f"📂 Extracted {len(ids)} job IDs from processed_job_urls input")
     return ids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# "about_me" builder — the free-text used for AI matching
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_about_me(config: ScraperConfig, keywords: List[str], search_urls: List[str]) -> str:
+    """
+    Builds the `about_me` string used for AI matching.
+
+    Priority: keyword lines the user typed take priority (joined with `\\n`,
+    the same separator the semantic matcher already splits on). If no
+    keywords were given, falls back to extracting the `q=` search term from
+    every provided Indeed search URL — not just the first one.
+
+    Always returns a `str` (possibly empty) — never a list. `ScraperConfig.about_me`
+    is a `str` everywhere it's consumed: `.strip()` in `ai_matching_enabled`,
+    the semantic matcher, log lines, and the `searchInput/position` output
+    field. Returning a list here previously broke all of those.
+    """
+    if keywords:
+        return "\n".join(k.strip() for k in keywords if k and k.strip())
+
+    extracted: List[str] = []
+    for url in search_urls or []:
+        if not isinstance(url, str) or not url.strip():
+            continue
+        params = parse_qs(urlparse(url).query)
+        keyword = (params.get("q", [""])[0] or "").strip()
+        if keyword:
+            extracted.append(keyword)
+
+    return "\n".join(extracted)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,6 +509,8 @@ async def flush_batch(
     if passed_links:
         accepted_links, accepted_pcts = await config.confirm_filtered_jobs(passed_links, passed_pcts)
         for link, pct in zip(accepted_links, accepted_pcts):
+            # Third element is the "no company found" retry counter — starts
+            # at 0 for every freshly-filtered job (point 6).
             await filter_queue.put((link, pct))
         if accepted_links:
             Actor.log.info(
@@ -509,6 +544,66 @@ def save_debug_html(html: str, url: str, tag: str = "page") -> None:
     except Exception as e:
         Actor.log.warning(f"⚠️ Could not save debug HTML: {e}")
         
+async def save_debug_page(
+    html: str,
+    url: str,
+    session: "aiohttp.ClientSession",
+    config: Optional["ScraperConfig"] = None,
+    tag: str = "page",
+    with_screenshot: bool = False,
+) -> None:
+    """
+    Debug aid — writes the raw HTML to ./debug_html/ so you can open it in a
+    browser. When `with_screenshot=True`, ALSO fetches a fresh screenshot of
+    the same page from Firecrawl and saves it as a matching .png with the
+    same numbered filename base, so the HTML and the screenshot pair up.
+
+    The screenshot is a separate, deliberate extra Firecrawl request — not
+    something every page fetch pays for. Only pass `with_screenshot=True`
+    for pages you're actually trying to debug (e.g. a "no company found"
+    page after all retries are exhausted), never on the hot path — it adds
+    real latency and a billable request per call.
+    """
+    if not ScraperSettings.DEBUG_SAVE_HTML:
+        return
+
+    os.makedirs(ScraperSettings.DEBUG_HTML_DIR, exist_ok=True)
+    n = next(_debug_counter)
+    safe_url = re.sub(r'[^a-zA-Z0-9]+', '_', url)[:80]
+    base = f"{n:04d}_{tag}_{safe_url}"
+
+    html_path = os.path.join(ScraperSettings.DEBUG_HTML_DIR, f"{base}.html")
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        Actor.log.info(f"💾 Saved debug HTML → {html_path}")
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not save debug HTML: {e}")
+
+    if not with_screenshot:
+        return
+
+    # Local import: firecrawl_client never imports helpers, so this isn't a
+    # real circular dependency — kept local just to make that explicit and
+    # to avoid paying the import cost when screenshots are never requested.
+    from .firecrawl_client import firecrawl
+
+    screenshot_url = await firecrawl.fetch_screenshot(url, session, config=config)
+    if not screenshot_url:
+        return
+
+    png_path = os.path.join(ScraperSettings.DEBUG_HTML_DIR, f"{base}.png")
+    try:
+        async with session.get(screenshot_url) as resp:
+            resp.raise_for_status()
+            content = await resp.read()
+        with open(png_path, "wb") as f:
+            f.write(content)
+        Actor.log.info(f"🖼️ Saved debug screenshot → {png_path}")
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not save debug screenshot: {e}")
+
+
 async def _flush_shared_batch(
     config: "ScraperConfig",
     batch_positions: list,
@@ -551,11 +646,15 @@ class ScraperConfig:
     search_country:   str       = "us"
 
     # Feature flags
-    scrape_company_details:   bool = False
-    save_unique_only:         bool = True
-    follow_apply_redirect:    bool = False
-    skip_expired_jobs:        bool = False
-    skip_ignore_related_jobs: bool = False
+    # NOTE: named with an `_input` suffix because `ai_matching_enabled`
+    # itself is a read-only @property below — it also factors in whether
+    # `about_me` actually has text, not just this user toggle.
+    ai_matching_enabled_input: bool = True
+    scrape_company_details:    bool = False
+    save_unique_only:          bool = True
+    follow_apply_redirect:     bool = False
+    skip_expired_jobs:         bool = False
+    skip_ignore_related_jobs:  bool = False
 
     # Google Sheets
     google_sheet_url: str = ""
@@ -578,6 +677,11 @@ class ScraperConfig:
     # forever near the max_jobs boundary. pushed_jobs only ever goes up.
     pushed_jobs:                int        = field(default=0, init=False)
     _saved_jobs:                List[dict] = field(default_factory=list, init=False)
+
+    # Point 2: every real Firecrawl API call attempt made on behalf of this
+    # run/user gets counted here — this is what billing should read.
+    total_requests:              int          = field(default=0, init=False)
+    _request_lock:                asyncio.Lock = field(default=None, init=False, repr=False)
 
     _last_page_start: Dict[str, int] = field(default_factory=dict, init=False)
     _lastpage_lock:   asyncio.Lock   = field(default=None, init=False, repr=False)
@@ -609,7 +713,15 @@ class ScraperConfig:
 
     @property
     def ai_matching_enabled(self) -> bool:
-        return bool(self.about_me and self.about_me.strip())
+        """
+        True only when the user's toggle is on AND there's actual text to
+        match against. `about_me` comes from `get_about_me()` — either the
+        user's keyword lines, or the `q=` term extracted from their search
+        URLs — and can legitimately be empty (e.g. a raw start_urls list
+        with no `q` param), in which case scoring is skipped even if the
+        toggle is on, same as before.
+        """
+        return bool(self.ai_matching_enabled_input and self.about_me and self.about_me.strip())
 
     @property
     def tracking_lock(self) -> asyncio.Lock:
@@ -622,6 +734,17 @@ class ScraperConfig:
         if self._uid_buffer_lock is None:
             self._uid_buffer_lock = asyncio.Lock()
         return self._uid_buffer_lock
+
+    @property
+    def request_lock(self) -> asyncio.Lock:
+        if self._request_lock is None:
+            self._request_lock = asyncio.Lock()
+        return self._request_lock
+
+    async def record_request(self, n: int = 1) -> None:
+        """Count `n` real Firecrawl API call attempts against this run (point 2)."""
+        async with self.request_lock:
+            self.total_requests += n
 
     async def buffer_uids(self, uids: list) -> None:
         async with self.uid_lock:
@@ -707,6 +830,7 @@ def load_scraper_config(
     follow_apply_redirect:    bool,
     skip_expired_jobs:        bool,
     skip_ignore_related_jobs: bool,
+    ai_matching_enabled:      bool = True,
     google_sheet_url:         str  = "",
     sheet_name:               str  = "Indeed Jobs",
 ) -> ScraperConfig:
@@ -724,6 +848,7 @@ def load_scraper_config(
         search_keywords=search_keywords,
         search_location=search_location,
         search_country=search_country,
+        ai_matching_enabled_input=ai_matching_enabled,
         scrape_company_details=scrape_company_details,
         save_unique_only=save_unique_only,
         follow_apply_redirect=follow_apply_redirect,
@@ -738,7 +863,6 @@ def load_scraper_config(
 # ─────────────────────────────────────────────────────────────────────────────
 # Startup info + status logger
 # ─────────────────────────────────────────────────────────────────────────────
-
 async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info("=" * 80)
     Actor.log.info(f"🎯 Max jobs:            {config.max_jobs}")
@@ -748,10 +872,16 @@ async def showstartinginfo(config: ScraperConfig) -> None:
         Actor.log.info(f"📍 Location:            '{config.search_location}' | country={config.search_country}")
     Actor.log.info(f"⚡ Concurrency:         {config.concurrency}")
     Actor.log.info(f"🏢 Per company:         {config.per_company_jobs}")
+
     if config.ai_matching_enabled:
         Actor.log.info(f"🤖 AI matching:         ON  |  min score: {config.min_match_percentage}%")
+        if config.min_match_percentage == 0:
+            Actor.log.info("   ↳ All jobs are being collected (min match % is 0)")
+        else:
+            Actor.log.info(f"   ↳ Only jobs with match % >= {config.min_match_percentage} are being collected")
     else:
         Actor.log.info("🤖 AI matching:         OFF (all jobs collected)")
+
     Actor.log.info(f"🏭 Company details:     {'ON' if config.scrape_company_details else 'OFF'}")
     Actor.log.info(f"🔁 Unique jobs only:    {'ON' if config.save_unique_only else 'OFF'}")
     Actor.log.info(f"🔗 Follow apply link:   {'ON' if config.follow_apply_redirect else 'OFF'}")
@@ -762,7 +892,6 @@ async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info(f"📚 Prev processed:      {len(config.processed_uids)} job IDs")
     Actor.log.info("=" * 80)
     Actor.log.info("🏃 Starting scraper execution…")
-
 
 async def status_logger(config: ScraperConfig, stop_event: asyncio.Event) -> None:
     BAR_LEN, last_saved, ticks_since_log = 20, -1, 0

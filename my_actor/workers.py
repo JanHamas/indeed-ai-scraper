@@ -5,10 +5,12 @@ Listing and processing workers — Bright Data Web Unlocker HTTP version.
 No browser contexts. Workers make HTTP requests through the shared
 AccountRotator (Bright Data Web Unlocker API) and parse HTML with BeautifulSoup.
 
-Worker split (same ratio as original):
-  - 16% primary_listing_worker  → lists then drains filter_queue
-  - 84% hybrid_listing_worker   → lists then drains filter_queue
-  - concurrency processing_worker → dedicated filter_queue draining
+Worker split (see main.py):
+  - listing workers (primary + hybrid) are hard-capped at
+    ScraperSettings.MAX_LISTING_WORKERS (point 3)
+  - processing workers are NOT capped by a fixed number — main.py sizes
+    them off this run's fair share of live Firecrawl capacity instead
+    (point 3)
 """
 from __future__ import annotations
 
@@ -58,11 +60,13 @@ async def _run_processing_phase(
         except asyncio.CancelledError:
             break
 
-        url, pct = item
+        # Third element is the "no company found" retry counter (point 6).
+        url, pct, attempt = item
         try:
             await process_filter_jobs(
                 url=url, percentage=pct, config=config,
                 filter_queue=filter_queue, session=session,
+                attempt=attempt,
             )
         except Exception as e:
             Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
@@ -106,7 +110,7 @@ async def primary_listing_worker(
             html: str | None = None
             for attempt in range(ScraperSettings.MAX_RETRIES):
                 try:
-                    html = await evomi.fetch(job_search_url, session)
+                    html = await evomi.fetch(job_search_url, session, config=config)
                     break
                 except Exception as e:
                     Actor.log.warning(
@@ -243,7 +247,7 @@ async def hybrid_listing_worker(
             html: str | None = None
             for attempt in range(ScraperSettings.MAX_RETRIES):
                 try:
-                    html = await evomi.fetch(job_search_url, session)
+                    html = await evomi.fetch(job_search_url, session, config=config)
                     break
                 except Exception as e:
                     Actor.log.warning(

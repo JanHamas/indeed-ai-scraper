@@ -13,12 +13,21 @@ How it works, in plain terms:
 - If an account runs out of credits (Firecrawl returns HTTP 402), that
   account is taken out of rotation and its name is printed once so you
   know which one to top up or delete (point 2).
+- Point 2 (billing): every actual attempt to hit the Firecrawl API — a
+  success, a 402, a 429, a 4xx/5xx, or a network error — is one real
+  request against your account, so it's counted. Pass the caller's
+  `config` (the per-run ScraperConfig) into `fetch()` and it gets
+  attributed to that user's run via `config.record_request()`. This is
+  what lets you charge a user for e.g. 3 retries on one listing page
+  when their filters are strict, not just for the 1 job that eventually
+  succeeded.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import deque
+from typing import Optional
 
 import aiohttp
 from apify import Actor
@@ -86,8 +95,22 @@ class FirecrawlClient:
             self._next += 1
             return account
 
-    async def fetch(self, url: str, session: aiohttp.ClientSession) -> str:
-        """Fetch `url` HTML through Firecrawl using whichever account has a free slot."""
+    async def fetch(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        config: Optional["object"] = None,
+    ) -> str:
+        """
+        Fetch `url` HTML through Firecrawl using whichever account has a
+        free slot.
+
+        `config` (a ScraperConfig) is optional but should be passed by every
+        caller — it's how a request gets billed to the right user's run.
+        Every branch below that actually reaches the network counts as one
+        request, regardless of whether it ends in success, a 402, a 429, or
+        an exception.
+        """
         attempt = 0
         while True:
             account = await self._next_account()
@@ -100,6 +123,9 @@ class FirecrawlClient:
             payload = {"url": url, "formats": ["rawHtml"]}
 
             try:
+                if config is not None:
+                    await config.record_request()
+
                 async with session.post(
                     FIRECRAWL_ENDPOINT,
                     json=payload,
@@ -139,6 +165,59 @@ class FirecrawlClient:
                     f"failed for {url}: {e} — retrying"
                 )
                 await asyncio.sleep(ScraperSettings.RETRY_DELAY_MIN)
+
+    async def fetch_screenshot(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        config: Optional["object"] = None,
+        full_page: bool = True,
+    ) -> Optional[str]:
+        """
+        Debug-only helper — deliberately NOT part of the normal fetch() path.
+        Requests just a screenshot (no rawHtml) from Firecrawl for `url` and
+        returns the hosted screenshot URL, or None on failure.
+
+        Kept separate because asking for a screenshot on every listing/job
+        fetch would slow down and add cost to every single request in the
+        scraper. Call this only when ScraperSettings.DEBUG_SAVE_HTML is on
+        and only for the specific pages you're already giving up on (see
+        helpers.save_debug_page), not on the hot path.
+
+        Note: like every other branch of fetch(), this still counts as a
+        real Firecrawl request and gets billed to `config` if one is passed.
+        """
+        account = await self._next_account()
+        await account.wait_for_slot()
+
+        headers = {
+            "Authorization": f"Bearer {account.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"url": url, "formats": ["screenshot@fullPage" if full_page else "screenshot"]}
+
+        try:
+            if config is not None:
+                await config.record_request()
+
+            async with session.post(
+                FIRECRAWL_ENDPOINT,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=ScraperSettings.REQUEST_TIMEOUT),
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    Actor.log.warning(
+                        f"⚠️ Screenshot request HTTP {resp.status} for {url}: {text[:200]}"
+                    )
+                    return None
+                body = await resp.json()
+                return (body.get("data") or {}).get("screenshot")
+
+        except Exception as e:
+            Actor.log.warning(f"⚠️ Screenshot request errored for {url}: {e}")
+            return None
 
 
 # Module-level singleton shared by all workers — same usage pattern as `evomi` before

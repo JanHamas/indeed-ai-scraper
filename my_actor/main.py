@@ -21,6 +21,7 @@ from .helpers import (
     status_logger,
     _flush_shared_batch,
     sanitize_indeed_url,
+    get_about_me,
 )
 from .workers import primary_listing_worker, hybrid_listing_worker, processing_worker
 from .gsheet import upload_to_google_sheet
@@ -30,8 +31,9 @@ PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
 async def main() -> None:
     async with Actor:
-        # ── Multiple runs are now allowed at once — each just gets a fair
-        # share of the shared Firecrawl capacity instead of waiting in line.
+        # ── Point 1 & 4: join() now blocks until fewer than
+        # CONCURRENT_MAX_USERS runs are active, then this run gets folded
+        # into the fair-share split of Firecrawl's capacity.
         await run_registry.join()
         try:
             await _run()
@@ -44,7 +46,6 @@ async def _run() -> None:
         start_time = time.perf_counter()
         # ── Core config ───────────────────────────────────────────────────────
         url_queue_raw    = actor_input.get("start_urls", [])
-        about_me         = actor_input.get("about_me", "").strip()
         ignore_companies = actor_input.get("ignore_companies", "")
         ignore_related   = actor_input.get("ignore_related", "")
         max_jobs         = int(actor_input.get("max_jobs", 50))
@@ -52,8 +53,10 @@ async def _run() -> None:
         min_match_pct    = int(actor_input.get("min_match_percentage", 0))
 
         # ── Concurrency: split Firecrawl's total capacity fairly across every
-        # currently-active run (point 2 & 3). 1 run = 100%, 2 runs = ~50% each,
-        # 3 runs = ~33% each, etc. Never goes below 1.
+        # currently-active run (point 2 & 3 & 4). 1 run = 100%, 2 runs = ~50%
+        # each, 3 runs = ~33% each, etc. Never goes below 1. (A 4th+ run
+        # never gets here concurrently with more than CONCURRENT_MAX_USERS-1
+        # others, since run_registry.join() makes it wait its turn first.)
         active_runs = await run_registry.active_run_count()
         fair_share  = max(1, firecrawl.max_concurrency // active_runs)
         concurrency = min(int(actor_input.get("concurrency", 15)), fair_share)
@@ -64,6 +67,7 @@ async def _run() -> None:
         )
 
         # ── Feature flags ─────────────────────────────────────────────────────
+        ai_matching_enabled      = bool(actor_input.get("ai_matching_enabled", True))
         scrape_company_details   = bool(actor_input.get("scrape_company_details", False))
         save_unique_only         = bool(actor_input.get("save_unique_only", True))
         follow_apply_redirect    = bool(actor_input.get("follow_apply_redirect", False))
@@ -122,6 +126,13 @@ async def _run() -> None:
         url_list = [u for u in url_list]
         Actor.log.info(f"📅 Applied sort=date to {len(url_list)} search URL(s)")
 
+        # ── AI matching free-text: prefer the user's keyword lines; fall back
+        # to the `q=` term on every search URL. Uses `url_list` (already
+        # resolved to plain sanitized strings above) rather than the raw
+        # `url_queue_raw` input, which can contain dicts and would break
+        # get_about_me()'s URL parsing. ─────────────────────────────────────
+        about_me = get_about_me(search_keywords, url_list)
+
         # ── Build config ──────────────────────────────────────────────────────
         config = load_scraper_config(
             url_list=url_list,
@@ -136,6 +147,7 @@ async def _run() -> None:
             search_keywords=search_keywords,
             search_location=search_location,
             search_country=search_country,
+            ai_matching_enabled=ai_matching_enabled,
             scrape_company_details=scrape_company_details,
             save_unique_only=save_unique_only,
             follow_apply_redirect=follow_apply_redirect,
@@ -168,9 +180,18 @@ async def _run() -> None:
         batch_lock = asyncio.Lock()
         stop_event = asyncio.Event()
 
+        # ── Point 3: listing workers hard-capped at MAX_LISTING_WORKERS (10).
+        # Processing workers are NOT given a fixed cap — they're sized to
+        # `concurrency`, i.e. however much of Firecrawl's total capacity this
+        # run currently has a fair-share claim to, so they scale up or down
+        # automatically as accounts run out of credit or other runs join/leave.
+        n_listing = min(concurrency, ScraperSettings.MAX_LISTING_WORKERS)
+        n_processing = concurrency
+
         Actor.log.info(
-            f"🚀 Launching {concurrency} listing + {concurrency} processing workers "
-            f"via Firecrawl ({len(firecrawl.active_accounts)} account(s) active)"
+            f"🚀 Launching {n_listing} listing (capped at "
+            f"{ScraperSettings.MAX_LISTING_WORKERS}) + {n_processing} processing "
+            f"worker(s) via Firecrawl ({len(firecrawl.active_accounts)} account(s) active)"
         )
 
         # ── Shared aiohttp session (one for all workers) ──────────────────────
@@ -182,11 +203,11 @@ async def _run() -> None:
 
             status_task = asyncio.create_task(status_logger(config, stop_event))
 
-            if concurrency <= 5:
+            if n_listing <= 5:
                 n_primary = 1
             else:
                 n_primary = 2
-            n_hybrid = concurrency - n_primary
+            n_hybrid = n_listing - n_primary
 
             primary_listing_tasks = [
                 asyncio.create_task(
@@ -229,10 +250,10 @@ async def _run() -> None:
                         url_queue=url_queue,
                         filter_queue=filter_queue,
                         session=session,
-                        worker_id=concurrency + i,
+                        worker_id=n_listing + i,
                     )
                 )
-                for i in range(concurrency*2)
+                for i in range(n_processing)
             ]
 
             results = await asyncio.gather(
@@ -255,6 +276,12 @@ async def _run() -> None:
             f"🏁 All workers done  |  ✅ saved: {config.extracted_jobs_counter}/{config.max_jobs}"
         )
 
+        # ── Point 2: this is the number to bill the user on — every real
+        # Firecrawl API call attempt made for this run, including retries
+        # triggered by strict filters, expired-page skips, or "no company
+        # found" re-fetches. ─────────────────────────────────────────────────
+        Actor.log.info(f"📡 Total billable Firecrawl requests this run: {config.total_requests}")
+
         # ── Google Sheets upload ──────────────────────────────────────────────
         gs_url = (config.google_sheet_url or "").strip()
         if gs_url:
@@ -272,5 +299,4 @@ async def _run() -> None:
             Actor.log.info("⏭️ No Google Sheet URL — skipping upload")
 
         Actor.log.info("✅ Actor finished successfully")
-        Actor.log.info(f"Total time taken: {time.perf_counter() - start}")
-        
+        Actor.log.info(f"Total time taken: {time.perf_counter() - start_time}")

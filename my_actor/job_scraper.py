@@ -21,7 +21,8 @@ from .helpers import (
     ScraperConfig,
     push_job_data,
     check_remote_status,
-    save_debug_html
+    save_debug_html,
+    save_debug_page,
 )
 
 from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
@@ -187,10 +188,16 @@ async def process_filter_jobs(
     config: ScraperConfig,
     filter_queue: asyncio.Queue,
     session: aiohttp.ClientSession,
+    attempt: int = 0,
 ) -> bool:
     """
     Fetch and scrape a single Indeed job page.
     Returns True if the job was saved, False otherwise.
+
+    `attempt` tracks how many times this URL has already been re-queued
+    specifically for a "no company found" parse failure (point 6). It is
+    carried on the filter_queue item as (url, percentage, attempt) and is
+    unrelated to the internal network-retry loop below.
     """
     data: dict = {field: "" for field in ScraperSettings.extraction_fields}
 
@@ -203,20 +210,23 @@ async def process_filter_jobs(
 
     # ── Fetch with retries ────────────────────────────────────────────────────
     html: str | None = None
-    for attempt in range(ScraperSettings.MAX_RETRIES):
+    for net_attempt in range(ScraperSettings.MAX_RETRIES):
         try:
-            html = await evomi.fetch(url, session)
+            html = await evomi.fetch(url, session, config=config)
             break
         except Exception as e:
-            Actor.log.warning(f"⏳ Attempt {attempt + 1}/{ScraperSettings.MAX_RETRIES} failed: {url} | {e}")
-            if attempt < ScraperSettings.MAX_RETRIES - 1:
+            Actor.log.warning(f"⏳ Attempt {net_attempt + 1}/{ScraperSettings.MAX_RETRIES} failed: {url} | {e}")
+            if net_attempt < ScraperSettings.MAX_RETRIES - 1:
                 await asyncio.sleep(
                     random.uniform(ScraperSettings.RETRY_DELAY_MIN, ScraperSettings.RETRY_DELAY_MAX)
                 )
 
     if html is None:
+        # Network-level failure — re-queue as-is, don't touch the
+        # "no company found" retry counter, that's a separate concern.
         await filter_queue.put((url, percentage))
         Actor.log.error(f"❌ All retries failed, re-queued: {url}")
+        return False
 
     # Parse once, reuse everywhere
     soup = BeautifulSoup(html, "lxml")
@@ -290,12 +300,16 @@ async def process_filter_jobs(
             await config.release_slot()
             return False
 
-        # Company
+        # Company — point 6: retry up to COMPANY_RETRY_LIMIT times before
+        # giving up. The slot stays held (no release_slot()) while retries
+        # remain, since the job may still succeed.
         company = _bs_company(soup)
         if not company:
             await config.release_slot()
-            Actor.log.warning(f"⚠️ No company found: {url}")
-            # save_debug_html(html, url, tag=f"w{random.randint(1,4444)}") 
+            await save_debug_page(
+                html, url, session, config=config,
+                tag="no_company_found", with_screenshot=True,
+            )
             return False
         data["company"] = company
 
