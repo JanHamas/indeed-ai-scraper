@@ -178,8 +178,8 @@
     "concurrency": {
       "title": "Concurrency (advanced)",
       "type": "integer",
-      "description": "Number of parallel browser workers per phase (listing + processing). Total browser contexts = concurrency × 2.\n\nMemory guide:\n  1 GB RAM  → use 2\n  2 GB RAM  → use 4\n  4 GB RAM  → use 8\n\nHigher = faster but uses more memory. OOM crashes if set too high for your memory allocation.",
-      "default": 5,
+      "description": "Number of parallel browser workers per phase (listing + processing).",
+      "default": 10,
       "minimum": 1,
       "maximum": 10
     }
