@@ -33,7 +33,6 @@ PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 # ── Free-tier limit: Apify accounts on the free plan (isPaying == False)
 # never get more than this many jobs per run, no matter what max_jobs they
 # ask for. ────────────────────────────────────────────────────────────────
-FREE_TIER_MAX_JOBS = 200
 
 async def _resolve_max_jobs(requested_max_jobs: int) -> tuple[int, bool]:
     try:

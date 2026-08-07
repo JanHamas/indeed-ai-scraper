@@ -639,6 +639,9 @@ class ScraperConfig:
     per_company_jobs:     int
     min_match_percentage: int
 
+    # Plan / billing
+    is_paying: bool = True
+
     # Search builder settings
     search_keywords:  List[str] = field(default_factory=list)
     search_location:  str       = ""

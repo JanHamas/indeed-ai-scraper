@@ -45,7 +45,7 @@ class ScraperSettings:
 
 
     # ── Debugging ───────────────────────────────────────────────────────
-    DEBUG_SAVE_HTML = os.getenv("DEBUG_SAVE_HTML", "").lower() == "false"
+    DEBUG_SAVE_HTML = False
     DEBUG_HTML_DIR  = "debug_html"
 
     # NOTE: concurrency is no longer a fixed number. Use
