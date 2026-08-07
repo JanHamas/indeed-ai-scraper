@@ -70,10 +70,10 @@
 
     "start_urls": {
       "title": "Indeed Search URLs (optional — overrides keyword search)",
-      "type": "array",
+      "type": "string",
       "description": "Advanced option: paste your own Indeed search URLs here. These take priority over the keyword/location/country fields above.\n\nWhen to use this: if you want to use Indeed's filters (date posted, salary, job type) that aren't available through the keyword builder — just set up your search on Indeed with those filters and copy the URL.\n\nLeave blank to use the keyword search fields above.",
-      "editor": "stringList",
-      "prefill": []
+      "editor": "textarea",
+      "prefill": ""
     },
 
     "processed_job_urls": {
