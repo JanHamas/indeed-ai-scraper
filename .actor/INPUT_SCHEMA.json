@@ -120,7 +120,7 @@
       "title": "Total Jobs to Collect",
       "type": "integer",
       "description": "The scraper stops once it has saved this many jobs total (across all keywords/URLs).",
-      "default": 50,
+      "default": 25,
       "minimum": 1
     },
 

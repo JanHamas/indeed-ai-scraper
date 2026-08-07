@@ -21,139 +21,174 @@ from .config import ScraperSettings
 from dotenv import load_dotenv
 
 load_dotenv()
+
 # ─────────────────────────────────────────────────────────────────────────────
-# AI matching (sentence-transformers + torch) — only in production
+# AI matching (sentence-transformers + torch) — LAZY LOADED
+#
+# torch + sentence-transformers are heavy (model download + init). We don't
+# want to pay that cost when the user has AI matching turned off. So none
+# of this is imported or instantiated at module import time — the
+# SemanticMatcher (and therefore torch/sentence_transformers) is only
+# constructed the first time get_match_percentages() is actually called
+# with matching enabled. Everything below that doesn't need torch (regex
+# helpers, title cleaning) still lives at module level since it's cheap.
 # ─────────────────────────────────────────────────────────────────────────────
 
-if os.getenv("APP_ENV") != "local":
-    import torch
-    from sentence_transformers import SentenceTransformer
-    from sentence_transformers.util import batch_to_device, cos_sim
+_UNIVERSAL_ABBR: Dict[str, str] = {
+    r'\bsr\.?\b': 'senior', r'\bjr\.?\b': 'junior',
+    r'\bmgr\.?\b': 'manager', r'\bdir\.?\b': 'director',
+    r'\bassoc\.?\b': 'associate', r'\bspec\.?\b': 'specialist',
+    r'\bcoord\.?\b': 'coordinator', r'\beng\.?\b': 'engineer',
+    r'\bdev\.?\b': 'developer', r'\barch\.?\b': 'architect',
+    r'\brep\.?\b': 'representative', r'\bvp\b': 'vice president',
+    r'\bsvp\b': 'senior vice president', r'\bcto\b': 'chief technology officer',
+    r'\bceo\b': 'chief executive officer', r'\bcoo\b': 'chief operating officer',
+    r'\bcfo\b': 'chief financial officer',
+}
+_NOISE_RE = re.compile(
+    r'\(.*?\)|\[.*?\]'
+    r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
+    r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
+    r'|urgent|immediate|opening|opportunity|position|role'
+    r'|new grad|entry.level|experienced)\b',
+    re.IGNORECASE,
+)
+_SEP_RE        = re.compile(r'[-–—|·•/\\]')
+_WHITESPACE_RE = re.compile(r'\s+')
 
-    _UNIVERSAL_ABBR: Dict[str, str] = {
-        r'\bsr\.?\b': 'senior', r'\bjr\.?\b': 'junior',
-        r'\bmgr\.?\b': 'manager', r'\bdir\.?\b': 'director',
-        r'\bassoc\.?\b': 'associate', r'\bspec\.?\b': 'specialist',
-        r'\bcoord\.?\b': 'coordinator', r'\beng\.?\b': 'engineer',
-        r'\bdev\.?\b': 'developer', r'\barch\.?\b': 'architect',
-        r'\brep\.?\b': 'representative', r'\bvp\b': 'vice president',
-        r'\bsvp\b': 'senior vice president', r'\bcto\b': 'chief technology officer',
-        r'\bceo\b': 'chief executive officer', r'\bcoo\b': 'chief operating officer',
-        r'\bcfo\b': 'chief financial officer',
-    }
-    _NOISE_RE = re.compile(
-        r'\(.*?\)|\[.*?\]'
-        r'|\b(remote|hybrid|onsite|on-site|contract|part[\s\-]?time'
-        r'|full[\s\-]?time|us only|usa only|w2|c2c|1099'
-        r'|urgent|immediate|opening|opportunity|position|role'
-        r'|new grad|entry.level|experienced)\b',
-        re.IGNORECASE,
+
+def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
+    abbr_map: Dict[str, str] = {}
+    paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
+    for m in paren_re.finditer(about_me):
+        left, right = m.group(1).strip(), m.group(2).strip()
+        ls = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
+        rs = sum(1 for c in right if c.isupper()) / max(len(right), 1)
+        if len(left) <= 8 and ls >= rs:
+            abbr, expansion = left, right
+        elif len(right) <= 8 and rs > ls:
+            abbr, expansion = right, left
+        else:
+            continue
+        if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
+            abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
+    camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+    for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
+        parts = camel_split.split(token)
+        spaced = ' '.join(parts).lower()
+        if spaced != token.lower() and len(parts) > 1:
+            abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
+    symbol_re = re.compile(
+        r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b|(\.[A-Z][A-Za-z0-9]+)'
     )
-    _SEP_RE        = re.compile(r'[-–—|·•/\\]')
-    _WHITESPACE_RE = re.compile(r'\s+')
+    for m in symbol_re.finditer(about_me):
+        symbol = (m.group(1) or m.group(2)).strip()
+        if not symbol or len(symbol) > 12:
+            continue
+        normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
+        if normalized and normalized != symbol.lower():
+            abbr_map[re.escape(symbol)] = normalized
+    return abbr_map
 
-    def _extract_abbr_from_user_text(about_me: str) -> Dict[str, str]:
-        abbr_map: Dict[str, str] = {}
-        paren_re = re.compile(r'\b([A-Za-z][A-Za-z0-9\-\.]{0,10})\s*\(([^)]{2,60})\)')
-        for m in paren_re.finditer(about_me):
-            left, right = m.group(1).strip(), m.group(2).strip()
-            ls = sum(1 for c in left  if c.isupper()) / max(len(left),  1)
-            rs = sum(1 for c in right if c.isupper()) / max(len(right), 1)
-            if len(left) <= 8 and ls >= rs:
-                abbr, expansion = left, right
-            elif len(right) <= 8 and rs > ls:
-                abbr, expansion = right, left
-            else:
-                continue
-            if re.match(r'^[A-Z][A-Za-z0-9\-]{1,7}$', abbr):
-                abbr_map[r'\b' + re.escape(abbr) + r'\b'] = expansion.lower()
-        camel_split = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
-        for token in re.findall(r'\b[A-Z][a-zA-Z]{2,15}\b', about_me):
-            parts = camel_split.split(token)
-            spaced = ' '.join(parts).lower()
-            if spaced != token.lower() and len(parts) > 1:
-                abbr_map[r'\b' + re.escape(token) + r'\b'] = spaced
-        symbol_re = re.compile(
-            r'\b([A-Za-z][A-Za-z0-9]*(?:[#\+\&][A-Za-z0-9]*)+)\b|(\.[A-Z][A-Za-z0-9]+)'
-        )
-        for m in symbol_re.finditer(about_me):
-            symbol = (m.group(1) or m.group(2)).strip()
-            if not symbol or len(symbol) > 12:
-                continue
-            normalized = re.sub(r'[#\+\.\&]', '', symbol).lower()
-            if normalized and normalized != symbol.lower():
-                abbr_map[re.escape(symbol)] = normalized
-        return abbr_map
 
-    def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple[re.Pattern, str]]:
-        compiled = []
-        for pattern, replacement in abbr_map.items():
-            try:
-                compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
-            except re.error:
-                pass
-        return compiled
+def _compile_patterns(abbr_map: Dict[str, str]) -> List[Tuple["re.Pattern", str]]:
+    compiled = []
+    for pattern, replacement in abbr_map.items():
+        try:
+            compiled.append((re.compile(pattern, re.IGNORECASE), replacement))
+        except re.error:
+            pass
+    return compiled
 
-    class SemanticMatcher:
-        MODEL_NAME = "TechWolf/JobBERT-v2"
 
-        def __init__(self, model_name: str = MODEL_NAME):
-            self._model = SentenceTransformer(model_name)
-            self._lock  = asyncio.Lock()
-            self._cached_keywords: Optional[str]              = None
-            self._query_embeddings                            = None
-            self._compiled_abbr: List[Tuple[re.Pattern, str]] = []
+class SemanticMatcher:
+    """
+    Wraps sentence-transformers. torch / SentenceTransformer are imported
+    INSIDE __init__ (not at module level), so simply importing helpers.py
+    never triggers the heavy import or model download — only constructing
+    this class does. We only construct it lazily, from _get_matcher().
+    """
+    MODEL_NAME = "TechWolf/JobBERT-v2"
 
-        def _encode(self, texts: List[str]):
-            features = self._model.tokenize(texts)
-            features = batch_to_device(features, self._model.device)
-            features["text_keys"] = ["anchor"]
-            with torch.no_grad():
-                out = self._model.forward(features)
-            emb = out["sentence_embedding"]
-            return torch.nn.functional.normalize(emb, p=2, dim=1)
+    def __init__(self, model_name: str = MODEL_NAME):
+        import torch
+        from sentence_transformers import SentenceTransformer
 
-        def _refresh_if_needed(self, user_keywords: str) -> None:
-            if user_keywords == self._cached_keywords:
-                return
-            abbr_map            = _extract_abbr_from_user_text(user_keywords)
-            self._compiled_abbr = _compile_patterns(abbr_map)
-            tokens = [t.strip() for t in re.split(r'[\n\r,|/•·]+', user_keywords) if t.strip() and len(t.strip()) > 1]
-            if not tokens:
-                tokens = [user_keywords.strip()]
-            seen, unique_tokens = set(), []
-            for t in tokens:
-                k = t.lower()
-                if k not in seen:
-                    seen.add(k)
-                    unique_tokens.append(t)
-            self._query_embeddings = self._encode([f"Job title: {t}" for t in unique_tokens])
-            self._cached_keywords  = user_keywords
+        self._torch = torch
+        self._model = SentenceTransformer(model_name)
+        self._lock  = asyncio.Lock()
+        self._cached_keywords: Optional[str]                = None
+        self._query_embeddings                              = None
+        self._compiled_abbr: List[Tuple["re.Pattern", str]] = []
 
-        def _clean_title(self, title: str) -> str:
-            t = title.lower()
-            for pattern, replacement in _UNIVERSAL_ABBR.items():
-                t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
-            for compiled_re, replacement in self._compiled_abbr:
-                t = compiled_re.sub(replacement, t)
-            t = _NOISE_RE.sub(' ', t)
-            t = _SEP_RE.sub(' ', t)
-            return _WHITESPACE_RE.sub(' ', t).strip()
+    def _encode(self, texts: List[str]):
+        from sentence_transformers.util import batch_to_device
 
-        def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
-            self._refresh_if_needed(user_keywords)
-            title_embeddings = self._encode([self._clean_title(t) for t in job_titles])
-            best_scores = cos_sim(self._query_embeddings, title_embeddings).max(dim=0).values.cpu().numpy()
-            return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
+        features = self._model.tokenize(texts)
+        features = batch_to_device(features, self._model.device)
+        features["text_keys"] = ["anchor"]
+        with self._torch.no_grad():
+            out = self._model.forward(features)
+        emb = out["sentence_embedding"]
+        return self._torch.nn.functional.normalize(emb, p=2, dim=1)
 
-        async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
-            if not user_keywords or not job_titles:
-                return []
-            async with self._lock:
+    def _refresh_if_needed(self, user_keywords: str) -> None:
+        if user_keywords == self._cached_keywords:
+            return
+        abbr_map            = _extract_abbr_from_user_text(user_keywords)
+        self._compiled_abbr = _compile_patterns(abbr_map)
+        tokens = [t.strip() for t in re.split(r'[\n\r,|/•·]+', user_keywords) if t.strip() and len(t.strip()) > 1]
+        if not tokens:
+            tokens = [user_keywords.strip()]
+        seen, unique_tokens = set(), []
+        for t in tokens:
+            k = t.lower()
+            if k not in seen:
+                seen.add(k)
+                unique_tokens.append(t)
+        self._query_embeddings = self._encode([f"Job title: {t}" for t in unique_tokens])
+        self._cached_keywords  = user_keywords
+
+    def _clean_title(self, title: str) -> str:
+        t = title.lower()
+        for pattern, replacement in _UNIVERSAL_ABBR.items():
+            t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+        for compiled_re, replacement in self._compiled_abbr:
+            t = compiled_re.sub(replacement, t)
+        t = _NOISE_RE.sub(' ', t)
+        t = _SEP_RE.sub(' ', t)
+        return _WHITESPACE_RE.sub(' ', t).strip()
+
+    def _score(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+        from sentence_transformers.util import cos_sim
+
+        self._refresh_if_needed(user_keywords)
+        title_embeddings = self._encode([self._clean_title(t) for t in job_titles])
+        best_scores = cos_sim(self._query_embeddings, title_embeddings).max(dim=0).values.cpu().numpy()
+        return [round(float(max(0.0, s) * 100), 2) for s in best_scores]
+
+    async def match(self, user_keywords: str, job_titles: List[str]) -> List[float]:
+        if not user_keywords or not job_titles:
+            return []
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
+
+
+# ── Module-level singleton, created lazily on first real use only. ────────
+_matcher: Optional[SemanticMatcher] = None
+_matcher_init_lock = asyncio.Lock()
+
+
+async def _get_matcher() -> SemanticMatcher:
+    global _matcher
+    if _matcher is None:
+        async with _matcher_init_lock:
+            if _matcher is None:  # re-check after acquiring lock
+                Actor.log.info("🤖 Loading AI matching model (first use this run)…")
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, self._score, user_keywords, job_titles)
-
-    _matcher = SemanticMatcher()
+                _matcher = await loop.run_in_executor(None, SemanticMatcher)
+    return _matcher
 
 
 async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[float]:
@@ -161,7 +196,8 @@ async def get_match_percentages(about_me: str, job_titles: List[str]) -> List[fl
         return [""] * len(job_titles)
     if os.getenv("APP_ENV") == "local":
         return [0 for _ in range(len(job_titles))]
-    return await _matcher.match(about_me, job_titles)
+    matcher = await _get_matcher()
+    return await matcher.match(about_me, job_titles)
 
 
 def parse_listing_cards(html: str) -> list[dict]:
@@ -495,13 +531,23 @@ async def flush_batch(
     batch_uids: list[str],
     filter_queue: asyncio.Queue,
 ) -> None:
-    percentages = await get_match_percentages(config.about_me, batch_positions)
-    threshold   = config.min_match_percentage if config.ai_matching_enabled else 0
+    # ── Only call into AI matching (and therefore only ever import/load
+    # the transformer model) when the user actually has it enabled. When
+    # it's off, every job passes with an empty score — no torch, no
+    # sentence-transformers, nothing loaded into memory. ────────────────
+    if config.ai_matching_enabled:
+        percentages = await get_match_percentages(config.about_me, batch_positions)
+        threshold   = config.min_match_percentage
+    else:
+        percentages = [""] * len(batch_positions)
+        threshold   = 0
 
     passed_links: list[str]   = []
     passed_pcts:  list[float] = []
     for link, pct in zip(batch_links, percentages):
-        if pct >= threshold:
+        # threshold is 0 when AI matching is off, and "" >= 0 is a
+        # TypeError in Python — so guard the comparison for the off case.
+        if not config.ai_matching_enabled or pct >= threshold:
             passed_links.append(link)
             passed_pcts.append(pct)
 
@@ -866,8 +912,6 @@ def load_scraper_config(
 # ─────────────────────────────────────────────────────────────────────────────
 async def showstartinginfo(config: ScraperConfig) -> None:
     Actor.log.info("=" * 80)
-    if not config.is_paying:
-        Actor.log.info(f"🆓 FREE-TIER APIFY ACCOUNT — capped at {config.max_jobs} jobs this run")
     Actor.log.info(f"🎯 Max jobs:            {config.max_jobs}")
     Actor.log.info(f"🔗 Search URLs:         {len(config.url_queue)}")
     if config.search_keywords:
