@@ -100,11 +100,11 @@
       "prefill": []
     },
 
-     "google_sheet_url": {
-      "title": "Google Sheet URL (optional)",
-      "type": "string",
-      "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Share → General access → 'Anyone with the link' → Editor.\n3. Paste the URL here.",
-      "editor": "textfield"
+   "google_sheet_url": {
+        "title": "Google Sheet URL (optional)",
+        "type": "string",
+        "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Click Share, then under 'General access' add this email with Editor access: python-api@indeed-leads-467810.iam.gserviceaccount.com\n3. Paste the sheet's URL here.",
+        "editor": "textfield"
     },
 
     "min_match_percentage": {
