@@ -45,7 +45,6 @@ def send_logs_email(
             server.starttls()
             server.login(ScraperSettings.EMAIL, ScraperSettings.EMAIL_PASSWORD)
             server.sendmail(ScraperSettings.EMAIL, [to_address], msg.as_string())
-        log.info(f"Sent log email to {to_address}")
     except Exception as e:
         log.warning(f"Failed to send log email: {e}")
 
@@ -66,8 +65,18 @@ def build_run_summary(
     start_time: float,
     errors: list[str] | None = None,
     run_status: str = "COMPLETED",
+    previously_processed_count: int | None = None,
 ) -> str:
-    """Build a plain-text run summary email body."""
+    """
+    Build a plain-text run summary email body.
+
+    `previously_processed_count` should be the size of `config.processed_uids`
+    captured BEFORE the scrape ran — i.e. just the IDs that came from the
+    user's `processed_job_urls` schema input. `config.processed_uids` is also
+    used as the in-run dedup set, so by the time the run finishes it has
+    every job ID collected THIS run merged in too. If the caller doesn't
+    pass this explicitly, we fall back to the (now-inflated) live count.
+    """
     jobs = config._saved_jobs
     lines: list[str] = []
 
@@ -105,7 +114,9 @@ def build_run_summary(
     lines.append(f"  Ignore related:         {ignore_related or 'None'}")
 
     processed_uids = getattr(config, "processed_uids", None) or set()
-    lines.append(f"  Previously processed:   {len(processed_uids)} job ID(s)")
+    if previously_processed_count is None:
+        previously_processed_count = len(processed_uids)
+    lines.append(f"  Previously processed:   {previously_processed_count} job ID(s)")
 
     lines.append("")
     lines.append("FEATURE FLAGS")
@@ -116,21 +127,7 @@ def build_run_summary(
     lines.append(f"  Skip expired jobs:      {'ON' if getattr(config, 'skip_expired_jobs', False) else 'OFF'}")
     lines.append(f"  Skip ignore-related:    {'ON' if getattr(config, 'skip_ignore_related_jobs', False) else 'OFF'}")
 
-    lines.append("")
-    lines.append("RESULTS BREAKDOWN")
-    lines.append(f"  Easy Apply: {_count_by(jobs, 'applyType', 'Easy Apply')}")
-    lines.append(f"  CS Apply:   {_count_by(jobs, 'applyType', 'CS Apply')}")
-    lines.append(f"  Remote:     {_count_by(jobs, 'isRemote', 'Remote')}")
-    lines.append(f"  Hybrid:     {_count_by(jobs, 'isRemote', 'Hybrid')}")
-    lines.append(f"  On-site:    {_count_by(jobs, 'isRemote', 'In-Person')}")
-
-    if jobs:
-        top_companies = Counter(j.get("company", "Unknown") for j in jobs).most_common(10)
-        lines.append("")
-        lines.append("TOP COMPANIES")
-        for company, count in top_companies:
-            lines.append(f"  {company}: {count}")
-
+   
     if config.ignored_companies_seen:
         ignored = sorted(config.ignored_companies_seen)
         lines.append("")

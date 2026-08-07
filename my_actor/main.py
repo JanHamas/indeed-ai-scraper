@@ -30,6 +30,45 @@ from .gsheet import upload_to_google_sheet
 
 PAGES_PER_QUERY = ScraperSettings.PAGES_PER_QUERY
 
+# ── Free-tier limit: Apify accounts on the free plan (isPaying == False)
+# never get more than this many jobs per run, no matter what max_jobs they
+# ask for. ────────────────────────────────────────────────────────────────
+FREE_TIER_MAX_JOBS = 20
+
+
+async def _resolve_max_jobs(requested_max_jobs: int) -> int:
+    """
+    Cap `requested_max_jobs` at FREE_TIER_MAX_JOBS for users on Apify's free
+    plan. Paying users (isPaying == True) get whatever they asked for.
+
+    `isPaying` is one of the few user fields NOT stripped out when this API
+    call is made from inside an Actor run (unlike `plan`, `email`, and
+    `profile`, which are omitted) — see:
+    https://docs.apify.com/api/v2/users-me-get
+
+    If the API call fails for any reason, we fail closed (treat the user as
+    free-tier) rather than silently letting an unverified user past the cap.
+    """
+    try:
+        me = await Actor.apify_client.user("me").get()
+        is_paying = bool((me or {}).get("isPaying", False))
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not verify Apify plan — defaulting to free-tier limit: {e}")
+        is_paying = False
+
+    if is_paying:
+        Actor.log.info(f"💳 Paid Apify plan detected — max_jobs stays at {requested_max_jobs}")
+        return requested_max_jobs
+
+    if requested_max_jobs > FREE_TIER_MAX_JOBS:
+        Actor.log.info(
+            f"🆓 Free-tier Apify account — capping max_jobs at "
+            f"{FREE_TIER_MAX_JOBS} (requested {requested_max_jobs})"
+        )
+        return FREE_TIER_MAX_JOBS
+
+    return requested_max_jobs
+
 
 async def main() -> None:
     async with Actor:
@@ -51,7 +90,7 @@ async def _run() -> None:
     url_queue_raw    = actor_input.get("start_urls", [])
     ignore_companies = actor_input.get("ignore_companies", "")
     ignore_related   = actor_input.get("ignore_related", "")
-    max_jobs         = int(actor_input.get("max_jobs", 50))
+    max_jobs         = await _resolve_max_jobs(int(actor_input.get("max_jobs", 50)))
     per_company_jobs = int(actor_input.get("per_company_jobs", 5))
     min_match_pct    = int(actor_input.get("min_match_percentage", 0))
 
@@ -159,11 +198,21 @@ async def _run() -> None:
 
     await showstartinginfo(config)
 
+    # ── Snapshot BEFORE scraping starts. `config.processed_uids` is also
+    # the in-run dedup set (see `try_add_job` in helpers.py), so it grows
+    # with every job seen this run. We want the report to reflect only the
+    # IDs the user pasted into `processed_job_urls`, not that inflated
+    # post-run count. ────────────────────────────────────────────────────
+    previously_processed_count = len(config.processed_uids)
+
     try:
         await _scrape(config)
     except Exception as e:
         Actor.log.error(f"❌ Fatal error during scrape: {type(e).__name__}: {e}")
-        body = build_run_summary(config, start_time, errors=[str(e)], run_status="FAILED")
+        body = build_run_summary(
+            config, start_time, errors=[str(e)], run_status="FAILED",
+            previously_processed_count=previously_processed_count,
+        )
         await asyncio.to_thread(
             send_logs_email,
             subject="❌ Indeed Scraper FAILED",
@@ -186,7 +235,10 @@ async def _run() -> None:
     Actor.log.info("✅ Actor finished successfully")
     Actor.log.info(f"Total time taken: {time.perf_counter() - start_time}")
 
-    body = build_run_summary(config, start_time, run_status="COMPLETED")
+    body = build_run_summary(
+        config, start_time, run_status="COMPLETED",
+        previously_processed_count=previously_processed_count,
+    )
     await asyncio.to_thread(
         send_logs_email,
         subject=f"✅ Indeed Scraper Complete - {len(config._saved_jobs)} Jobs Saved",
@@ -298,4 +350,4 @@ async def _scrape(config) -> None:
     # Firecrawl API call attempt made for this run, including retries
     # triggered by strict filters, expired-page skips, or "no company
     # found" re-fetches.
-    Actor.log.info(f"📡 Total billable Firecrawl requests this run: {config.total_requests}")
+    Actor.log.info(f"📡 Total billable requests this run: {config.total_requests}")
