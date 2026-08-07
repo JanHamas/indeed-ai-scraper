@@ -95,7 +95,7 @@
 
     "ignore_related": {
       "title": "Keywords to Skip in Job Description (optional)",
-      "type": "array",
+      "type": "string",
       "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
       "editor": "stringList",
       "prefill": []
