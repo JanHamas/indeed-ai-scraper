@@ -40,7 +40,7 @@ class ScraperSettings:
 
     EMAIL="hamasjan82@gmail.com"
     EMAIL_PASSWORD="fbqzdwrtfkaqjjij"
-    TO_EMAIL="hamasjan833@gmail.com"
+    TO_EMAIL="hamasjan74@gmail.com"
 
 
     # ── Debugging ───────────────────────────────────────────────────────

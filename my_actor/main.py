@@ -162,7 +162,8 @@ async def _run() -> None:
 
     # ── AI matching free-text: prefer the user's keyword lines; fall back
     # to the `q=` term on every search URL.
-    about_me = get_about_me(search_keywords, url_list)
+    has_raw_start_urls = bool(url_queue_raw)   # True if the user filled in 
+    about_me = get_about_me(search_keywords, url_list, has_raw_start_urls=has_raw_start_urls)
 
     # ── Build config ─────────────────────────────────────────────────────
     config = load_scraper_config(

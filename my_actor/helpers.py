@@ -367,21 +367,37 @@ def extract_job_ids_from_urls(urls: list[str]) -> set[str]:
 # "about_me" builder — the free-text used for AI matching
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_about_me(keywords: List[str], search_urls: List[str]) -> str:
+def get_about_me(
+    keywords: List[str],
+    search_urls: List[str],
+    has_raw_start_urls: bool = False,
+) -> str:
     """
-    Builds the `about_me` string used for AI matching.
+    Builds the `about_me` string used for AI matching AND for the
+    `searchInput/position` output field shown to the user (e.g. in the
+    Google Sheet export).
 
-    Priority: keyword lines the user typed take priority (joined with `\\n`,
-    the same separator the semantic matcher already splits on). If no
-    keywords were given, falls back to extracting the `q=` search term from
-    every provided Indeed search URL — not just the first one.
+    Priority depends on where the URLs actually came from:
+      - If the user supplied `start_urls` directly (has_raw_start_urls=True),
+        `about_me` is ALWAYS derived from those URLs' `q=` params — this is
+        what's actually being scraped, and must never be silently
+        overridden by an unrelated/stale `search_keywords` value left over
+        in the input. Without this, a run scraping "ai engineer" URLs could
+        report every row's position as "web developer" if that string was
+        also sitting in search_keywords.
+      - Otherwise (no raw start_urls — WE built these URLs FROM keywords
+        via build_indeed_search_urls), keywords is authoritative, since
+        it's the same source that built the URLs in the first place.
+      - If raw start_urls were given but none had a usable `q=` param
+        (e.g. a category/browse URL with no query), fall back to keywords
+        as a rough proxy rather than returning nothing.
 
     Always returns a `str` (possibly empty) — never a list. `ScraperConfig.about_me`
     is a `str` everywhere it's consumed: `.strip()` in `ai_matching_enabled`,
     the semantic matcher, log lines, and the `searchInput/position` output
     field. Returning a list here previously broke all of those.
     """
-    if keywords:
+    if not has_raw_start_urls and keywords:
         return "\n".join(k.strip() for k in keywords if k and k.strip())
 
     extracted: List[str] = []
@@ -393,7 +409,12 @@ def get_about_me(keywords: List[str], search_urls: List[str]) -> str:
         if keyword:
             extracted.append(keyword)
 
-    return "\n".join(extracted)
+    if extracted:
+        return "\n".join(extracted)
+
+    # Raw start_urls were given but had no q= param at all (e.g. a
+    # category/browse URL) — only then fall back to keywords as a proxy.
+    return "\n".join(k.strip() for k in keywords if k and k.strip())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
