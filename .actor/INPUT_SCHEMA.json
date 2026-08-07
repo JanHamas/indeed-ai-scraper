@@ -78,10 +78,34 @@
 
     "processed_job_urls": {
       "title": "Already-Processed Job URLs (skip duplicates across runs)",
-      "type": "array",
+      "type": "string",
       "description": "Paste Indeed job URLs you already scraped in a previous run. The scraper extracts job IDs from these and skips them — so you never collect the same job twice across multiple runs.\n\nPaste job URLs in the format:\nhttps://www.indeed.com/viewjob?jk=abc123def456",
+      "editor": "textarea",
+      "prefill": []
+    },
+
+    "ignore_companies": {
+      "title": "Companies to Skip (optional)",
+      "type": "string",
+      "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
       "editor": "stringList",
       "prefill": []
+      
+    },
+
+    "ignore_related": {
+      "title": "Keywords to Skip in Job Description (optional)",
+      "type": "array",
+      "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
+      "editor": "stringList",
+      "prefill": []
+    },
+
+     "google_sheet_url": {
+      "title": "Google Sheet URL (optional)",
+      "type": "string",
+      "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Share → General access → 'Anyone with the link' → Editor.\n3. Paste the URL here.",
+      "editor": "textfield"
     },
 
     "min_match_percentage": {
@@ -108,39 +132,6 @@
       "default": 5,
       "minimum": 1,
       "maximum": 50
-    },
-
-    "ignore_companies": {
-      "title": "Companies to Skip (optional)",
-      "type": "array",
-      "description": "Jobs from these companies will be ignored. One name per line.\n\nExample:\nGoogle\nAmazon\nStaffing Solutions Inc",
-      "editor": "stringList",
-      "prefill": []
-      
-    },
-
-    "ignore_related": {
-      "title": "Keywords to Skip in Job Description (optional)",
-      "type": "array",
-      "description": "If a job description contains any of these words, that job is skipped (or flagged, depending on the 'Skip Jobs Matching Keywords' toggle). One keyword per line.\n\nExample:\nclearance required\nC++\nmanagement consulting",
-      "editor": "stringList",
-      "prefill": []
-    },
-
-
-    "google_sheet_url": {
-      "title": "Google Sheet URL (optional)",
-      "type": "string",
-      "description": "Export results to Google Sheets — no credentials needed.\n\nSetup (one-time):\n1. Open your Google Sheet.\n2. Share → General access → 'Anyone with the link' → Editor.\n3. Paste the URL here.",
-      "editor": "textfield"
-    },
-
-    "sheet_name": {
-      "title": "Google Sheet Tab Name",
-      "type": "string",
-      "description": "The worksheet tab where results are written. Created automatically if it doesn't exist.",
-      "default": "Indeed Jobs",
-      "editor": "textfield"
     },
 
     "ai_matching_enabled": {
