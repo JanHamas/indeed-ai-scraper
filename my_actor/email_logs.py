@@ -86,15 +86,35 @@ def build_run_summary(
 
     lines.append("")
     lines.append("CONFIGURATION")
-    lines.append(f"  Max jobs:         {config.max_jobs}")
-    lines.append(f"  Per company limit:{config.per_company_jobs}")
-    lines.append(f"  Concurrency:      {config.concurrency}")
-    lines.append(f"  AI matching:      {'ON' if config.ai_matching_enabled else 'OFF'}")
-    lines.append(f"  Min match %:      {config.min_match_percentage}%")
-    lines.append(f"  Country:          {config.search_country.upper()}")
-    lines.append(f"  Location:         {config.search_location or 'All'}")
+    lines.append(f"  Max jobs:               {config.max_jobs}")
+    lines.append(f"  Per company limit:      {config.per_company_jobs}")
+    lines.append(f"  Concurrency:            {config.concurrency}")
+    lines.append(f"  Min match %:            {config.min_match_percentage}%")
+    lines.append(f"  Country:                {config.search_country.upper()}")
+    lines.append(f"  Location:               {config.search_location or 'All'}")
     keywords = ", ".join(config.search_keywords) if config.search_keywords else "From URLs"
-    lines.append(f"  Keywords:         {keywords}")
+    lines.append(f"  Keywords:               {keywords}")
+
+    about_me = getattr(config, "about_me", "")
+    if about_me:
+        lines.append(f"  AI matching text:       {about_me[:200]}")
+
+    ignore_companies = getattr(config, "ignore_companies", None) or getattr(config, "ignore_companies_raw", "")
+    ignore_related = getattr(config, "ignore_related", None) or getattr(config, "ignore_related_raw", "")
+    lines.append(f"  Ignore companies:       {ignore_companies or 'None'}")
+    lines.append(f"  Ignore related:         {ignore_related or 'None'}")
+
+    processed_uids = getattr(config, "processed_uids", None) or set()
+    lines.append(f"  Previously processed:   {len(processed_uids)} job ID(s)")
+
+    lines.append("")
+    lines.append("FEATURE FLAGS")
+    lines.append(f"  AI matching:            {'ON' if config.ai_matching_enabled else 'OFF'}")
+    lines.append(f"  Scrape company details: {'ON' if getattr(config, 'scrape_company_details', False) else 'OFF'}")
+    lines.append(f"  Save unique only:       {'ON' if getattr(config, 'save_unique_only', False) else 'OFF'}")
+    lines.append(f"  Follow apply redirect:  {'ON' if getattr(config, 'follow_apply_redirect', False) else 'OFF'}")
+    lines.append(f"  Skip expired jobs:      {'ON' if getattr(config, 'skip_expired_jobs', False) else 'OFF'}")
+    lines.append(f"  Skip ignore-related:    {'ON' if getattr(config, 'skip_ignore_related_jobs', False) else 'OFF'}")
 
     lines.append("")
     lines.append("RESULTS BREAKDOWN")

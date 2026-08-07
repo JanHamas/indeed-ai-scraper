@@ -79,7 +79,7 @@ async def upload_to_google_sheet(
         worksheet = workbook.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
         worksheet = workbook.add_worksheet(title=sheet_name, rows=5000, cols=40)
-        log.warning(f"📰 Created new worksheet: {sheet_name}")
+        log.info(f"📰 Created new worksheet: {sheet_name}")
 
     def jobs_to_rows(job_list: list[dict]) -> list[list]:
         rows = []
