@@ -109,13 +109,6 @@
       "default": true
     },
 
-    "scrape_company_details": {
-      "title": "Scrape Company Details (feature currently unavailable)",
-      "type": "boolean",
-      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so scraper price pay per resuld would be double.",
-      "default": false
-    },
-
     "save_unique_only": {
       "title": "Save Only Unique Job Listings",
       "type": "boolean",
@@ -137,6 +130,13 @@
       "default": true
     },
 
+     "scrape_company_details": {
+      "title": "Scrape Company Details (feature currently unavailable)",
+      "type": "boolean",
+      "description": "When enabled, the scraper visits each company's Indeed profile page to collect extra data: company size, industry, and a short description.\n\nNote: this roughly doubles the number of page loads, so scraper price pay per resuld would be double.",
+      "default": false
+    },
+    
     "follow_apply_redirect": {
       "title": "Follow Redirects for Apply Link (feature currently unavailable)",
       "type": "boolean",
