@@ -188,16 +188,10 @@ async def process_filter_jobs(
     config: ScraperConfig,
     filter_queue: asyncio.Queue,
     session: aiohttp.ClientSession,
-    attempt: int = 0,
 ) -> bool:
     """
     Fetch and scrape a single Indeed job page.
     Returns True if the job was saved, False otherwise.
-
-    `attempt` tracks how many times this URL has already been re-queued
-    specifically for a "no company found" parse failure (point 6). It is
-    carried on the filter_queue item as (url, percentage, attempt) and is
-    unrelated to the internal network-retry loop below.
     """
     data: dict = {field: "" for field in ScraperSettings.extraction_fields}
 

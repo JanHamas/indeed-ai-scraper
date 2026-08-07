@@ -61,12 +61,12 @@ async def _run_processing_phase(
             break
 
         # Third element is the "no company found" retry counter (point 6).
-        url, pct, attempt = item
+        url, pct = item
         try:
             await process_filter_jobs(
                 url=url, percentage=pct, config=config,
                 filter_queue=filter_queue, session=session,
-                attempt=attempt,
+
             )
         except Exception as e:
             Actor.log.error(f"❌ Worker {worker_id} processing error: {e}")
@@ -204,7 +204,7 @@ async def primary_listing_worker(
 
     try:
         Actor.log.info(f"Primary listing worker {worker_id} switched to processing."
-                       f"url_queue empty: {url_queue.empty()} |"
+                       f"url_queue empty: {url_queue.empty()} | "
                        f"pushed jobs: {config.pushed_jobs}"
                        )
         await _run_processing_phase(config, url_queue, filter_queue, worker_id, session)

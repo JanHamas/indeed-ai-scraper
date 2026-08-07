@@ -331,7 +331,7 @@ def extract_job_ids_from_urls(urls: list[str]) -> set[str]:
 # "about_me" builder — the free-text used for AI matching
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_about_me(config: ScraperConfig, keywords: List[str], search_urls: List[str]) -> str:
+def get_about_me(keywords: List[str], search_urls: List[str]) -> str:
     """
     Builds the `about_me` string used for AI matching.
 
