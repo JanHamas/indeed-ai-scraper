@@ -26,10 +26,10 @@ def _extract_workbook_id(link: str) -> str | None:
 
 async def upload_to_google_sheet(
     link: str,
-    sheet_name: str,
     jobs: list[dict],
     log: Any,
 ) -> None:
+    sheet_name = "Indeed_jobs"
     """
     Upload scraped jobs to a publicly-editable Google Sheet.
 
