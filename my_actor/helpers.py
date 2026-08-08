@@ -261,10 +261,64 @@ def parse_listing_cards(html: str) -> list[dict]:
 
     return results
 
+
 def has_next_page(html: str) -> bool:
     """True if Indeed's pagination shows a next-page link."""
     soup = BeautifulSoup(html, "lxml")
     return soup.select_one('[data-testid="pagination-page-next"]') is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page-validity check — THE PAGINATION-TRUNCATION FIX
+#
+# Bug this solves: the crawler previously treated "0 job cards parsed" as
+# equivalent to "no more search results exist", and permanently pruned all
+# remaining pagination URLs for that query (see logs: "🛑 Last page ...
+# removed 98 pagination URL(s) beyond it"). But an empty `.cardOutline`
+# result is frequently caused by a BLOCKED / CAPTCHA'd / partially-rendered
+# fetch — not genuine end-of-results. Manually browsing the same query
+# showed real results all the way to page 33, while the scraper had
+# truncated it at page 2 because of one bad fetch.
+#
+# Fix: a genuine Indeed SERP — even a legitimately empty one — always
+# renders SOME of this shell markup (job cards, the pagination nav, or the
+# page's <h1> heading). If a fetched page has NONE of these, it almost
+# certainly means the request was blocked/interstitial'd/truncated, not
+# that the query ran out of jobs. Callers should retry on an invalid page
+# rather than concluding "last page".
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_valid_listing_page(html: str) -> bool:
+    """
+    True only if this looks like a genuine, fully-rendered Indeed SERP —
+    NOT a blocked/CAPTCHA/interstitial/partial response.
+
+    A real SERP always renders the pagination nav shell and/or an <h1>
+    heading even on a legitimately empty results page. If none of cards,
+    pagination nav, or heading are present, treat the fetch as FAILED
+    (retry it) rather than as a genuine "no more results" signal.
+    """
+    if not html or not html.strip():
+        return False
+    soup = BeautifulSoup(html, "lxml")
+    has_cards          = soup.select_one(".cardOutline") is not None
+    has_pagination_nav = soup.select_one('nav[aria-label="pagination"]') is not None
+    has_heading        = soup.select_one("h1") is not None
+    return has_cards or has_pagination_nav or has_heading
+
+
+def is_genuinely_last_page(html: str) -> bool:
+    """
+    Use THIS — not "cards is empty" — to decide whether pagination has
+    truly ended for a query. Only call this after `is_valid_listing_page()`
+    has confirmed the page actually loaded correctly; calling it on a
+    failed/blocked fetch will incorrectly report True (no next-page link
+    exists on an error page either) and reintroduce the original bug.
+
+    True when the page is valid AND Indeed's own pagination markup shows
+    no next-page link.
+    """
+    return is_valid_listing_page(html) and not has_next_page(html)
 
 
 def get_page_title(html: str) -> str:
@@ -495,7 +549,8 @@ def clear_queue(q: asyncio.Queue) -> None:
             q.task_done()
         except asyncio.QueueEmpty:
             break
-        
+
+
 async def purge_queue_beyond(url_queue: asyncio.Queue, base_url: str, last_start: int) -> int:
     removed = 0
     keepers = []
@@ -513,6 +568,86 @@ async def purge_queue_beyond(url_queue: asyncio.Queue, base_url: str, last_start
     for item in keepers:
         await url_queue.put(item)
     return removed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retry-safe listing page handling — THE OTHER HALF OF THE FIX
+#
+# Use this from your crawler/worker loop instead of hand-rolling the
+# "cards empty -> mark last page" logic. It re-queues genuinely failed
+# fetches (up to `max_retries`) instead of ever pruning pagination URLs
+# because of them, and only tells the caller "this is the last page" when
+# the page loaded correctly AND Indeed's own pagination markup agrees.
+#
+# Expected usage in the crawler loop, replacing whatever currently does
+# "if not cards: mark_last_page(...)":
+#
+#     start, url, retries = queue_item          # 3-tuple now, see below
+#     html = await fetch(url)
+#     decision = classify_listing_page(html, url, start, retries)
+#
+#     if decision == "retry":
+#         await url_queue.put((start, url, retries + 1))
+#         await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+#         continue
+#
+#     if decision == "give_up":
+#         Actor.log.warning(f"⚠️ Giving up on start={start} for {url} after repeated bad loads")
+#         continue
+#
+#     cards = parse_listing_cards(html)
+#
+#     if decision == "last_page":
+#         if await config.mark_last_page(_base_url_of(url), start):
+#             removed = await purge_queue_beyond(url_queue, _base_url_of(url), start)
+#             Actor.log.info(f"🛑 Last page (start={start}) for '{_base_url_of(url)}' — removed {removed} pagination URL(s) beyond it")
+#         # still process `cards` below if there happen to be any on this page
+#
+#     # ... normal processing of `cards` continues here regardless of decision
+#
+# When queue items are seeded, seed them as (start, url, 0) instead of
+# (start, url) — the extra 0 is the initial retry count.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_MAX_PAGE_RETRIES = 3
+
+
+def classify_listing_page(
+    html: str,
+    url: str,
+    start: int,
+    retries: int,
+    max_retries: int = DEFAULT_MAX_PAGE_RETRIES,
+) -> str:
+    """
+    Decide what to do with a fetched listing page. Returns one of:
+      - "retry"      the fetch looked blocked/broken; re-queue and try again
+      - "give_up"    retried too many times already; stop trying this URL
+      - "last_page"  page loaded fine and Indeed shows no next-page link
+      - "continue"   page loaded fine, has more pages, proceed normally
+
+    This function makes NO decision based on "cards is empty" alone —
+    that was the root cause of the original bug (pruning ~98 pagination
+    URLs off a query that actually had 33 real pages, triggered by a
+    single failed fetch). Empty cards are only meaningful once we already
+    know the page itself loaded correctly.
+    """
+    if not is_valid_listing_page(html):
+        if retries < max_retries:
+            Actor.log.warning(
+                f"⚠️ Bad/blocked page load at start={start} for '{url}' "
+                f"— retry {retries + 1}/{max_retries}"
+            )
+            return "retry"
+        Actor.log.warning(
+            f"⚠️ Exhausted {max_retries} retries on start={start} for '{url}' — giving up on this page"
+        )
+        return "give_up"
+
+    if is_genuinely_last_page(html):
+        return "last_page"
+
+    return "continue"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
