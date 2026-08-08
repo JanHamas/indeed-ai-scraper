@@ -6,16 +6,18 @@ from __future__ import annotations
 
 import smtplib
 import time
-from collections import Counter
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any
+from typing import Any, Optional
 
 from .config import ScraperSettings
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
+
+# How many search URLs to list verbatim in the email before truncating.
+MAX_URLS_IN_EMAIL = 20
 
 
 def send_logs_email(
@@ -60,12 +62,48 @@ def _count_by(jobs: list[dict], field: str, value: str) -> int:
     return sum(1 for j in jobs if j.get(field) == value)
 
 
+def _format_credit_usage(credit_usage: list[dict]) -> list[str]:
+    """
+    credit_usage is the list returned by FirecrawlClient.get_all_credit_usage():
+    [{"name": str, "remaining": int|None, "plan": int|None, "error": str|None}, ...]
+    """
+    lines: list[str] = []
+    lines.append("")
+    lines.append("FIRECRAWL CREDITS (per account)")
+
+    total_remaining = 0
+    total_plan = 0
+    any_ok = False
+
+    name_width = max((len(a["name"]) for a in credit_usage), default=20)
+    name_width = max(name_width, 20)
+
+    for acc in credit_usage:
+        name = acc.get("name", "unknown")
+        if acc.get("error"):
+            lines.append(f"  {name:<{name_width}}  ERROR: {acc['error']}")
+            continue
+        remaining = acc.get("remaining")
+        plan = acc.get("plan")
+        any_ok = True
+        total_remaining += remaining or 0
+        total_plan += plan or 0
+        lines.append(f"  {name:<{name_width}}  {remaining} / {plan} remaining")
+
+    if any_ok:
+        lines.append(f"  {'—' * name_width}")
+        lines.append(f"  {'TOTAL':<{name_width}}  {total_remaining} / {total_plan} remaining")
+
+    return lines
+
+
 def build_run_summary(
     config: Any,
     start_time: float,
     errors: list[str] | None = None,
     run_status: str = "COMPLETED",
     previously_processed_count: int | None = None,
+    credit_usage: Optional[list[dict]] = None,
 ) -> str:
     """
     Build a plain-text run summary email body.
@@ -76,6 +114,10 @@ def build_run_summary(
     used as the in-run dedup set, so by the time the run finishes it has
     every job ID collected THIS run merged in too. If the caller doesn't
     pass this explicitly, we fall back to the (now-inflated) live count.
+
+    `credit_usage`, if provided, is the list returned by
+    FirecrawlClient.get_all_credit_usage() — one entry per configured
+    account, so the user can see exactly which accounts need topping up.
     """
     jobs = config._saved_jobs
     lines: list[str] = []
@@ -113,8 +155,25 @@ def build_run_summary(
     lines.append(f"  Min match %:            {config.min_match_percentage}%")
     lines.append(f"  Country:                {config.search_country.upper()}")
     lines.append(f"  Location:               {config.search_location or 'All'}")
-    keywords = ", ".join(config.search_keywords) if config.search_keywords else "From URLs"
+
+    # ── search_keywords is only ever authoritative when the user did NOT
+    # supply start_urls directly (see get_about_me() in helpers.py). Say so
+    # explicitly instead of the old silent "From URLs" placeholder — and
+    # always list the actual URLs that were scraped, since those are the
+    # real source of truth for what this run did. ──────────────────────
+    keywords = (
+        ", ".join(config.search_keywords)
+        if config.search_keywords
+        else "None (used direct start_urls)"
+    )
     lines.append(f"  Keywords:               {keywords}")
+
+    if config.url_queue:
+        lines.append(f"  Search URLs ({len(config.url_queue)}):")
+        for u in config.url_queue[:MAX_URLS_IN_EMAIL]:
+            lines.append(f"    {u}")
+        if len(config.url_queue) > MAX_URLS_IN_EMAIL:
+            lines.append(f"    ... and {len(config.url_queue) - MAX_URLS_IN_EMAIL} more")
 
     about_me = getattr(config, "about_me", "")
     if about_me:
@@ -139,7 +198,6 @@ def build_run_summary(
     lines.append(f"  Skip expired jobs:      {'ON' if getattr(config, 'skip_expired_jobs', False) else 'OFF'}")
     lines.append(f"  Skip ignore-related:    {'ON' if getattr(config, 'skip_ignore_related_jobs', False) else 'OFF'}")
 
-
     if config.ignored_companies_seen:
         ignored = sorted(config.ignored_companies_seen)
         lines.append("")
@@ -148,6 +206,9 @@ def build_run_summary(
             lines.append(f"  {company}")
         if len(ignored) > 20:
             lines.append(f"  ... and {len(ignored) - 20} more")
+
+    if credit_usage:
+        lines.extend(_format_credit_usage(credit_usage))
 
     if errors:
         lines.append("")

@@ -35,6 +35,12 @@ from apify import Actor
 from .config import ScraperSettings
 
 FIRECRAWL_ENDPOINT = "https://api.firecrawl.dev/v1/scrape"
+
+# Credit usage lives on Firecrawl's v2 surface even though scraping still
+# goes through v1/scrape — this is the endpoint Firecrawl's own docs point
+# to for "how many credits does this team have left".
+CREDIT_USAGE_ENDPOINT = "https://api.firecrawl.dev/v2/team/credit-usage"
+
 REQUESTS_PER_MINUTE_PER_ACCOUNT = 10
 WINDOW_SECONDS = 60
 
@@ -182,7 +188,8 @@ class FirecrawlClient:
         fetch would slow down and add cost to every single request in the
         scraper. Call this only when ScraperSettings.DEBUG_SAVE_HTML is on
         and only for the specific pages you're already giving up on (see
-        helpers.save_debug_page), not on the hot path.
+        helpers.save_debug_page), not on the hot path — it adds real latency
+        and a billable request per call.
 
         Note: like every other branch of fetch(), this still counts as a
         real Firecrawl request and gets billed to `config` if one is passed.
@@ -218,6 +225,62 @@ class FirecrawlClient:
         except Exception as e:
             Actor.log.warning(f"⚠️ Screenshot request errored for {url}: {e}")
             return None
+
+    async def get_credit_usage(
+        self,
+        account: _AccountLimiter,
+        session: aiohttp.ClientSession,
+    ) -> dict:
+        """
+        Look up remaining credits for a single account via Firecrawl's
+        credit-usage endpoint. Never raises — failures are reported back
+        as an `error` string so one bad/expired key doesn't blow up the
+        whole report.
+        """
+        entry: dict = {
+            "name": account.name,
+            "remaining": None,
+            "plan": None,
+            "error": None,
+        }
+        headers = {"Authorization": f"Bearer {account.api_key}"}
+        try:
+            async with session.get(
+                CREDIT_USAGE_ENDPOINT,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status == 200 and body.get("success"):
+                    data = body.get("data") or {}
+                    entry["remaining"] = data.get("remainingCredits")
+                    entry["plan"] = data.get("planCredits")
+                else:
+                    entry["error"] = body.get("error") or f"HTTP {resp.status}"
+        except Exception as e:
+            entry["error"] = str(e)
+        return entry
+
+    async def get_all_credit_usage(
+        self,
+        session: aiohttp.ClientSession,
+    ) -> list[dict]:
+        """
+        Look up remaining credits for every configured account (not just
+        the ones still active in this run — an exhausted account today may
+        have been topped up since, and the report should reflect reality).
+
+        Returns a list of dicts, one per account, in config order:
+            {"name": str, "remaining": int|None, "plan": int|None, "error": str|None}
+
+        Queried concurrently since this is a read-only, low-cost call
+        (separate from the rate-limited scrape endpoint) — safe to fire all
+        accounts at once rather than round-robining them.
+        """
+        results = await asyncio.gather(
+            *(self.get_credit_usage(account, session) for account in self._accounts)
+        )
+        return list(results)
 
 
 # Module-level singleton shared by all workers — same usage pattern as `evomi` before

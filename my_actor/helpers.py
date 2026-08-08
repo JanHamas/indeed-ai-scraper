@@ -23,6 +23,15 @@ load_dotenv()
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TQDM_DISABLE", "1")          # catches tqdm bars not gated by the HF var
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+import logging
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+
+import warnings
+warnings.filterwarnings("ignore", module="huggingface_hub")
 # ─────────────────────────────────────────────────────────────────────────────
 # AI matching (sentence-transformers + torch) — LAZY LOADED
 #

@@ -34,6 +34,7 @@ class ScraperSettings:
         "hamasjan74@gmail.com": "fc-885e5a645e9d4819b1e74349d9e9bcba",
         "hamasjan822": "fc-6e047438346e422f8802cbd63a17eaab",
         "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564",
+        "quaid": "fc-3cdff0dc42624fb09ad0ce67b3ad8d78",
     }
 
     FREE_TIER_MAX_JOBS = 25

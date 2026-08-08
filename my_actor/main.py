@@ -62,9 +62,24 @@ async def _resolve_max_jobs(requested_max_jobs: int) -> tuple[int, bool]:
     return effective, False
 
 
+async def _safe_get_credit_usage() -> list[dict] | None:
+    """
+    Look up remaining Firecrawl credits for every configured account, for
+    inclusion in the run-summary email. Best-effort only — a failure here
+    (network hiccup, one dead key, etc.) should never prevent the actual
+    run summary from being sent.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            return await firecrawl.get_all_credit_usage(session)
+    except Exception as e:
+        Actor.log.warning(f"⚠️ Could not fetch Firecrawl credit usage: {e}")
+        return None
+
+
 async def main() -> None:
     async with Actor:
-        # ── Point 1 & 4: join() blocks until fewer than CONCURRENT_MAX_USERS
+        # ── join() blocks until fewer than CONCURRENT_MAX_USERS
         # runs are active, then this run gets folded into the fair-share
         # split of Firecrawl's capacity.
         await run_registry.join()
@@ -135,6 +150,26 @@ async def _run() -> None:
             url_list.append(entry.get("url", "").strip())
     url_list = [sanitize_indeed_url(u) for u in url_list if u]
 
+    # ── has_raw_start_urls is True only when the USER supplied start_urls
+    # directly in the input — not when we built url_list ourselves below
+    # from search_keywords. This flag decides precedence between the two
+    # inputs (see get_about_me() in helpers.py). ───────────────────────
+    has_raw_start_urls = bool(url_queue_raw)
+
+    if has_raw_start_urls and search_keywords:
+        # Both inputs were given. Today, direct start_urls win: url_list
+        # stays exactly what the user pasted, search_keywords is NOT used
+        # to build additional URLs, and the AI-matching "about_me" text is
+        # pulled from the q= param on each start_url instead of from
+        # search_keywords. Logged explicitly so this isn't a silent
+        # surprise when both fields are filled in.
+        Actor.log.info(
+            "⚠️ Both 'start_urls' and 'search_keywords' were provided — "
+            "start_urls take priority this run. search_keywords is ignored "
+            "for building the URL list and for AI-matching text (which is "
+            "instead pulled from the q= param on each start_url)."
+        )
+
     if not url_list:
         if not search_keywords:
             msg = (
@@ -163,7 +198,6 @@ async def _run() -> None:
 
     # ── AI matching free-text: prefer the user's keyword lines; fall back
     # to the `q=` term on every search URL.
-    has_raw_start_urls = bool(url_queue_raw)   # True if the user filled in
     about_me = get_about_me(search_keywords, url_list, has_raw_start_urls=has_raw_start_urls)
 
     # ── Build config ─────────────────────────────────────────────────────
@@ -203,9 +237,11 @@ async def _run() -> None:
         await _scrape(config)
     except Exception as e:
         Actor.log.error(f"❌ Fatal error during scrape: {type(e).__name__}: {e}")
+        credit_usage = await _safe_get_credit_usage()
         body = build_run_summary(
             config, start_time, errors=[str(e)], run_status="FAILED",
             previously_processed_count=previously_processed_count,
+            credit_usage=credit_usage,
         )
         await asyncio.to_thread(
             send_logs_email,
@@ -229,9 +265,15 @@ async def _run() -> None:
     Actor.log.info("✅ Actor finished successfully")
     Actor.log.info(f"Total time taken: {time.perf_counter() - start_time}")
 
+    # ── Pull remaining credits for every configured Firecrawl account so
+    # the run-summary email shows exactly which ones need topping up.
+    # Best-effort: never blocks the success email from going out. ───────
+    credit_usage = await _safe_get_credit_usage()
+
     body = build_run_summary(
         config, start_time, run_status="COMPLETED",
         previously_processed_count=previously_processed_count,
+        credit_usage=credit_usage,
     )
     await asyncio.to_thread(
         send_logs_email,
@@ -270,7 +312,7 @@ async def _scrape(config) -> None:
     stop_event = asyncio.Event()
 
     concurrency = config.concurrency
-    # ── Point 3: listing workers hard-capped at MAX_LISTING_WORKERS (10).
+    # ── Listing workers hard-capped at MAX_LISTING_WORKERS (10).
     # Processing workers scale directly with this run's fair-share
     # concurrency, so they speed up or slow down as accounts run out of
     # credit or other runs join/leave.
@@ -363,8 +405,7 @@ async def _scrape(config) -> None:
     Actor.log.info(
         f"🏁 All workers done  |  ✅ saved: {config.extracted_jobs_counter}/{config.max_jobs}"
     )
-    # ── Point 2: this is the number to bill the user on — every real
-    # Firecrawl API call attempt made for this run, including retries
-    # triggered by strict filters, expired-page skips, or "no company
-    # found" re-fetches.
+    # ── This is the number to bill the user on — every real Firecrawl API
+    # call attempt made for this run, including retries triggered by strict
+    # filters, expired-page skips, or "no company found" re-fetches.
     Actor.log.info(f"📡 Total billable requests this run: {config.total_requests}")
