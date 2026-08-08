@@ -222,6 +222,7 @@ async def _run() -> None:
         skip_ignore_related_jobs=skip_ignore_related_jobs,
         google_sheet_url=google_sheet_url,
         is_paying=is_paying,
+        has_raw_start_urls=has_raw_start_urls,
     )
 
     await showstartinginfo(config)

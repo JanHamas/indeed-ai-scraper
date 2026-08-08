@@ -162,13 +162,13 @@ def build_run_summary(
     # always list the actual URLs that were scraped, since those are the
     # real source of truth for what this run did. ──────────────────────
     keywords = (
-        ", ".join(config.search_keywords)
-        if config.search_keywords
-        else "None (used direct start_urls)"
+    ", ".join(config.search_keywords)
+    if config.search_keywords
+    else "None (used direct start_urls)"
     )
     lines.append(f"  Keywords:               {keywords}")
 
-    if config.url_queue:
+    if config.has_raw_start_urls and config.url_queue:
         lines.append(f"  Search URLs ({len(config.url_queue)}):")
         for u in config.url_queue[:MAX_URLS_IN_EMAIL]:
             lines.append(f"    {u}")

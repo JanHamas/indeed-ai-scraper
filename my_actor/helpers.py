@@ -718,6 +718,7 @@ class ScraperConfig:
 
     # Plan / billing
     is_paying: bool = True
+    has_raw_start_urls: bool = False
 
     # Search builder settings
     search_keywords:  List[str] = field(default_factory=list)
@@ -909,6 +910,7 @@ def load_scraper_config(
     skip_expired_jobs:        bool,
     skip_ignore_related_jobs: bool,
     ai_matching_enabled:      bool = True,
+    has_raw_start_urls:       bool = False,
     is_paying: bool = True,
     google_sheet_url:         str  = "",
 ) -> ScraperConfig:
@@ -935,6 +937,7 @@ def load_scraper_config(
         google_sheet_url=google_sheet_url,
         processed_uids=processed_uids,
         is_paying=is_paying,
+        has_raw_start_urls=has_raw_start_urls,
     )
 
 
