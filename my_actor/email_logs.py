@@ -144,8 +144,8 @@ def build_run_summary(
     lines.append("STATISTICS")
     lines.append(f"  Jobs extracted:   {config.extracted_jobs_counter}/{config.max_jobs}")
     lines.append(f"  Jobs pushed:      {config.pushed_jobs}/{config.max_jobs}")
-    lines.append(f"  Total saved:      {len(jobs)}")
-    lines.append(f"  Billable requests:{config.total_requests}")
+    lines.append(f"  Total saved:       {len(jobs)}")
+    lines.append(f"  Billable requests: {config.total_requests}")
 
     lines.append("")
     lines.append("CONFIGURATION")
@@ -175,9 +175,9 @@ def build_run_summary(
         if len(config.url_queue) > MAX_URLS_IN_EMAIL:
             lines.append(f"    ... and {len(config.url_queue) - MAX_URLS_IN_EMAIL} more")
 
-    about_me = getattr(config, "about_me", "")
-    if about_me:
-        lines.append(f"  AI matching text:       {about_me[:200]}")
+    # about_me = getattr(config, "about_me", "")
+    # if about_me:
+    #     lines.append(f"  AI matching text:       {about_me[:200]}")
 
     ignore_companies = getattr(config, "ignore_companies", None) or getattr(config, "ignore_companies_raw", "")
     ignore_related = getattr(config, "ignore_related", None) or getattr(config, "ignore_related_raw", "")

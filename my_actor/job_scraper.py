@@ -106,8 +106,29 @@ def _bs_description(soup: BeautifulSoup) -> tuple[str, str]:
 
 
 def _bs_benefits(soup: BeautifulSoup) -> str:
+    # Current Indeed markup (2026): a bare div-stack list, no ul/li and no
+    # data-testid on the container itself. The only reliable anchor is the
+    # "Show more"/"Show less" toggle button that sits as the last child of
+    # the same container as the benefit rows.
+    toggle = soup.select_one(
+        'button[data-testid="collapsedBenefitsButton"], '
+        'button[data-testid="expandedBenefitsButton"]'
+    )
+    if toggle and toggle.parent:
+        items = [
+            text
+            for row in toggle.parent.find_all("div", recursive=False)
+            if (text := row.get_text(strip=True))
+        ]
+        if items:
+            return "\n".join(items)
+
+    # Legacy markup: data-testid="benefits-test" ul > li
     items = soup.select('[data-testid="benefits-test"] ul li')
-    return "\n".join(li.get_text(strip=True) for li in items if li.get_text(strip=True))
+    if items:
+        return "\n".join(li.get_text(strip=True) for li in items if li.get_text(strip=True))
+
+    return ""
 
 
 def _bs_remote_badge(soup: BeautifulSoup) -> str:
@@ -175,6 +196,49 @@ def _bs_posted_date(html: str) -> tuple[str, str]:
         posted_at = age_match.group(1)
 
     return posted_at, posting_date_parsed
+
+
+def _compute_posting_age(posting_date_parsed: str, posted_at_text: str, scraped_at: datetime) -> dict:
+    """
+    Exact elapsed time since posting, in whole hours and days — computed
+    from real UTC timestamps rather than trusting Indeed's own 'age' text,
+    which is day-rounded once a job is more than ~24h old (so "3 days ago"
+    could be anywhere from 3d0h to 3d23h).
+
+    Prefers postingDateParsed (derived from the page's datePublished
+    epoch-ms field). Falls back to a best-effort parse of the 'age' text
+    when no timestamp was extracted for this job. Returns {} if neither
+    source yields a usable value — callers should treat that as "unknown",
+    not zero.
+    """
+    posted_dt = None
+
+    if posting_date_parsed:
+        try:
+            posted_dt = datetime.fromisoformat(posting_date_parsed.replace("Z", "+00:00"))
+        except ValueError:
+            posted_dt = None
+
+    if posted_dt is None and posted_at_text:
+        text = posted_at_text.strip().lower()
+        if "just posted" in text or text == "today":
+            return {"postingAgeHours": 0, "postingAgeDays": 0}
+        m = re.search(r"(\d+)\+?\s*hour", text)
+        if m:
+            hours = int(m.group(1))
+            return {"postingAgeHours": hours, "postingAgeDays": hours // 24}
+        m = re.search(r"(\d+)\+?\s*day", text)
+        if m:
+            days = int(m.group(1))
+            return {"postingAgeHours": days * 24, "postingAgeDays": days}
+        return {}
+
+    if posted_dt is None:
+        return {}
+
+    delta = scraped_at - posted_dt
+    total_hours = max(0, int(delta.total_seconds() // 3600))
+    return {"postingAgeHours": total_hours, "postingAgeDays": total_hours // 24}
 
 
 def _bs_is_expired(soup: BeautifulSoup) -> bool:
@@ -316,6 +380,12 @@ async def process_filter_jobs(
         # no second BeautifulSoup(html, "lxml") call.
         _backfill_from_dom(data, soup, html)
 
+        data.update(_compute_posting_age(
+            data.get("postingDateParsed", ""),
+            data.get("postedAt", ""),
+            datetime.fromisoformat(data["scrapedAt"]),
+        ))
+
         data["searchInput"] = {
             "country":  data["searchInput/country"],
             "location": data["searchInput/location"],
@@ -406,6 +476,13 @@ async def process_filter_jobs(
 
         # Company Indeed URL
         data["companyIndeedUrl"] = _bs_company_indeed_url(soup)
+
+        # Exact posting age (see _compute_posting_age docstring)
+        data.update(_compute_posting_age(
+            data.get("postingDateParsed", ""),
+            data.get("postedAt", ""),
+            datetime.fromisoformat(data["scrapedAt"]),
+        ))
 
         # Search input composite
         data["searchInput"] = {
