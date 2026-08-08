@@ -9,7 +9,7 @@
       "type": "string",
       "description": "Enter job titles or keywords to search on Indeed, one per line. The scraper builds search URLs automatically from these.\n\nExample:\nPython Developer\nBackend Engineer\nDjango Developer\n\nLeave blank if you are providing your own 'Indeed Search URLs' below.",
       "editor": "textarea",
-      "prefill": ""
+      "prefill": "software engineer"
     },
 
     "search_country": {

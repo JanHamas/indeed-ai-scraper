@@ -142,8 +142,28 @@ async def primary_listing_worker(
             # save_debug_html(html, job_search_url, tag=f"w{worker_id}") 
     
             Actor.log.info(f"🔍 Worker {worker_id} listing: {job_search_url}")
-    
-            # ── Detect end of results ─────────────────────────────────────────────
+            # ── Parse job cards FIRST ───────────────────────────────────────────
+            try:
+                cards = parse_listing_cards(html)
+            except Exception as e:
+                Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
+                url_queue.task_done()
+                continue
+
+            if not cards:
+                # No cards found. This could genuinely be an empty results page,
+                # OR a bad/blocked fetch (bot-check page, truncated content, etc).
+                # Either way, we must NOT purge future pagination URLs off this
+                # signal alone — that's how legitimate pages 3-34 got silently
+                # deleted from the queue for every keyword in this run.
+                Actor.log.warning(
+                    f"⚠️ Worker {worker_id} found 0 cards on {job_search_url} — "
+                    f"treating as a failed/empty fetch, NOT marking as last page."
+                )
+                url_queue.task_done()
+                continue
+
+            # ── Only now, with confirmed real content on the page, check pagination ──
             if not has_next_page(html):
                 if await config.mark_last_page(base_url, start):
                     removed = await purge_queue_beyond(url_queue, base_url, start)
@@ -151,19 +171,6 @@ async def primary_listing_worker(
                         f"🛑 Last page (start={start}) for '{base_url}' — "
                         f"removed {removed} pagination URL(s) beyond it"
                     )
-    
-            # ── Parse job cards ───────────────────────────────────────────────────
-            try:
-                cards = parse_listing_cards(html)
-            except Exception as e:
-                Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
-                # await save_debug_html(html, job_search_url, tag="parse_error")   # ← add
-                url_queue.task_done()
-                continue
-    
-            if not cards:
-                url_queue.task_done()
-                continue
     
             # ── Filter and batch ──────────────────────────────────────────────────
             positions_to_add: list[str] = []
@@ -280,7 +287,28 @@ async def hybrid_listing_worker(
     
             Actor.log.info(f"🔍 Worker {worker_id} listing: {job_search_url}")
     
-            # ── Detect end of results ─────────────────────────────────────────────
+            # ── Parse job cards FIRST ───────────────────────────────────────────
+            try:
+                cards = parse_listing_cards(html)
+            except Exception as e:
+                Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
+                url_queue.task_done()
+                continue
+
+            if not cards:
+                # No cards found. This could genuinely be an empty results page,
+                # OR a bad/blocked fetch (bot-check page, truncated content, etc).
+                # Either way, we must NOT purge future pagination URLs off this
+                # signal alone — that's how legitimate pages 3-34 got silently
+                # deleted from the queue for every keyword in this run.
+                Actor.log.warning(
+                    f"⚠️ Worker {worker_id} found 0 cards on {job_search_url} — "
+                    f"treating as a failed/empty fetch, NOT marking as last page."
+                )
+                url_queue.task_done()
+                continue
+
+            # ── Only now, with confirmed real content on the page, check pagination ──
             if not has_next_page(html):
                 if await config.mark_last_page(base_url, start):
                     removed = await purge_queue_beyond(url_queue, base_url, start)
@@ -288,20 +316,6 @@ async def hybrid_listing_worker(
                         f"🛑 Last page (start={start}) for '{base_url}' — "
                         f"removed {removed} pagination URL(s) beyond it"
                     )
-    
-            # ── Parse job cards ───────────────────────────────────────────────────
-            try:
-                cards = parse_listing_cards(html)
-            except Exception as e:
-                Actor.log.warning(f"⚠️ Worker {worker_id} card parse error on {job_search_url}: {e}")
-                # await save_debug_html(html, job_search_url, tag="parse_error")   # ← add
-                url_queue.task_done()
-                continue
-    
-            if not cards:
-                url_queue.task_done()
-                continue
-    
             # ── Filter and batch ──────────────────────────────────────────────────
             positions_to_add: list[str] = []
             links_to_add:     list[str] = []
