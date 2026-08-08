@@ -19,6 +19,9 @@ SMTP_PORT = 587
 # How many search URLs to list verbatim in the email before truncating.
 MAX_URLS_IN_EMAIL = 20
 
+# How many search keywords to list verbatim in the email before truncating.
+MAX_KEYWORDS_IN_EMAIL = 25
+
 
 def send_logs_email(
     subject: str,
@@ -161,12 +164,14 @@ def build_run_summary(
     # explicitly instead of the old silent "From URLs" placeholder — and
     # always list the actual URLs that were scraped, since those are the
     # real source of truth for what this run did. ──────────────────────
-    keywords = (
-    ", ".join(config.search_keywords)
-    if config.search_keywords
-    else "None (used direct start_urls)"
-    )
-    lines.append(f"  Keywords:               {keywords}")
+    if config.search_keywords:
+        lines.append(f"  Keywords ({len(config.search_keywords)}):")
+        for kw in config.search_keywords[:MAX_KEYWORDS_IN_EMAIL]:
+            lines.append(f"    {kw}")
+        if len(config.search_keywords) > MAX_KEYWORDS_IN_EMAIL:
+            lines.append(f"    ... and {len(config.search_keywords) - MAX_KEYWORDS_IN_EMAIL} more")
+    else:
+        lines.append("  Keywords:               None (used direct start_urls)")
 
     if config.has_raw_start_urls and config.url_queue:
         lines.append(f"  Search URLs ({len(config.url_queue)}):")

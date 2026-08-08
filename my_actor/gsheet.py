@@ -86,9 +86,13 @@ async def upload_to_google_sheet(
     Every job in `jobs` gets a row, regardless of its `applyType` — jobs are
     just grouped (Easy Apply, then CS Apply, then everything else) and
     sorted by jobMatch within each group for readability. Nothing is
-    dropped for not matching an expected applyType value.
+    dropped for not matching an expected applyType value. The "everything
+    else" group is written without a labeled divider row — see
+    _job_to_row / add_group below.
     """
     sheet_name = "Indeed_jobs"
+
+    log.info(f"📄 Google Sheet URL provided: {link}")
 
     wb_id = _extract_workbook_id(link)
     if not wb_id:
@@ -137,14 +141,16 @@ async def upload_to_google_sheet(
 
     add_group("Easy Apply", easy_jobs)
     add_group("CS Apply", cs_jobs)
-    add_group("Other", other_jobs)
+    # "Other" jobs are still written (nothing gets dropped), just without
+    # a labeled divider row — no "── Other ──" section header.
+    all_rows.extend(_job_to_row(job) for job in other_jobs)
 
     try:
         worksheet.clear()
         worksheet.update("A1", all_rows)
         log.info(
             f"✅ Uploaded {len(jobs)} jobs to Google Sheets tab '{sheet_name}' "
-            f"({len(easy_jobs)} Easy Apply, {len(cs_jobs)} CS Apply, {len(other_jobs)} other)"
+            f"({len(easy_jobs)} Easy Apply, {len(cs_jobs)} CS Apply)"
         )
     except Exception as e:
         log.error(f"❌ Failed to write to Google Sheet: {e}")
