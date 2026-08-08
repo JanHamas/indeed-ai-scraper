@@ -65,7 +65,7 @@ async def _run_processing_phase(
         try:
             await process_filter_jobs(
                 url=url, percentage=pct, config=config,
-                filter_queue=filter_queue, session=session,
+                session=session,
 
             )
         except Exception as e:

@@ -2,325 +2,30 @@
 my_actor/job_scraper.py
 Scrapes full job details from a single Indeed job page via Decodo's
 Web Scraping API.
-Field names match ScraperSettings.extraction_fields exactly.
+
+Field names match ScraperSettings.extraction_fields.
+
+Single-source design: all fields are pulled from the embedded GraphQL
+job object in window._rootProps (see parse_indeed_rootprops.py). No
+BeautifulSoup / DOM scraping, no ld+json parsing — those were both
+partial views of the same data and the DOM path was what broke on
+Indeed's 2026 RNW template (rating/review scraping silently returned
+0/0). The GraphQL object is template-agnostic and far more complete.
 """
 from __future__ import annotations
 
 import asyncio
 import random
-import re
 import urllib.parse
 from datetime import datetime, timezone
 
 import aiohttp
 from apify import Actor
-from bs4 import BeautifulSoup
+
 from .firecrawl_client import firecrawl as evomi
 from .config import ScraperSettings
-from .helpers import (
-    ScraperConfig,
-    push_job_data,
-    check_remote_status,
-    save_debug_html,
-    save_debug_page,
-)
-
-from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# BeautifulSoup extractors and fallbacks json embedded
-# ─────────────────────────────────────────────────────────────────────────────
-# These are used in two places:
-#   1. As the ONLY extraction path when the embedded-JSON (ld+json /
-#      _rootProps) parse fails or is missing a title.
-#   2. As BACKFILL for fields the embedded-JSON parser doesn't cover at all
-#      (benefits, applyType, rating/reviewsCount, companyIndeedUrl,
-#      postingDateParsed) — so the fast path no longer silently drops them.
-
-def _bs_company(soup: BeautifulSoup) -> str:
-    for sel in [
-        '[data-company-name="true"] a',
-        '[data-testid="inlineHeader-companyName"] span a',
-        '[data-company-name="true"]',
-        '[data-testid="inlineHeader-companyName"]',
-    ]:
-        el = soup.select_one(sel)
-        if el:
-            text = el.get_text(separator=" ", strip=True).split("\n")[0].strip()
-            if text:
-                return text
-    return ""
-
-
-def _bs_company_indeed_url(soup: BeautifulSoup) -> str:
-    for sel in [
-        '[data-testid="inlineHeader-companyName"] a',
-        '[data-company-name="true"] a',
-    ]:
-        el = soup.select_one(sel)
-        if el:
-            href = el.get("href", "")
-            if href:
-                if href.startswith("/"):
-                    return "https://www.indeed.com" + href
-                return href
-    return ""
-
-
-def _bs_salary_and_job_types(soup: BeautifulSoup) -> tuple[str, list[str]]:
-    container = soup.select_one("#salaryInfoAndJobType")
-    salary, job_types = "", []
-    if not container:
-        return salary, job_types
-
-    delimiter_pattern = re.compile(r'\s*[,\/·]\s*|\s+-\s+')
-    spans = container.select("span")
-    for span in spans:
-        text = span.get_text(strip=True)
-        if not text:
-            continue
-        if any(sym in text for sym in ("$", "£", "€")) or "year" in text.lower():
-            salary = text
-        else:
-            tokens = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
-            job_types.extend(tokens)
-
-    if len(spans) == 1 and not salary:
-        text = spans[0].get_text(strip=True)
-        job_types = [t.strip() for t in delimiter_pattern.split(text) if t.strip()]
-
-    return salary, job_types
-
-
-def _bs_location(soup: BeautifulSoup) -> str:
-    el = soup.select_one('[data-testid="inlineHeader-companyLocation"]')
-    return el.get_text(strip=True) if el else ""
-
-
-def _bs_description(soup: BeautifulSoup) -> tuple[str, str]:
-    desc = soup.select_one("#jobDescriptionText")
-    if desc:
-        return desc.get_text(separator="\n", strip=True), str(desc)
-    return "", ""
-
-
-def _bs_benefits(soup: BeautifulSoup) -> str:
-    # Current Indeed markup (2026): a bare div-stack list, no ul/li and no
-    # data-testid on the container itself. The only reliable anchor is the
-    # "Show more"/"Show less" toggle button that sits as the last child of
-    # the same container as the benefit rows.
-    toggle = soup.select_one(
-        'button[data-testid="collapsedBenefitsButton"], '
-        'button[data-testid="expandedBenefitsButton"]'
-    )
-    if toggle and toggle.parent:
-        items = [
-            text
-            for row in toggle.parent.find_all("div", recursive=False)
-            if (text := row.get_text(strip=True))
-        ]
-        if items:
-            return "\n".join(items)
-
-    # Legacy markup: data-testid="benefits-test" ul > li
-    items = soup.select('[data-testid="benefits-test"] ul li')
-    if items:
-        return "\n".join(li.get_text(strip=True) for li in items if li.get_text(strip=True))
-
-    return ""
-
-
-def _bs_remote_badge(soup: BeautifulSoup) -> str:
-    container = soup.select_one('[data-testid="jobsearch-CompanyInfoContainer"]')
-    if not container:
-        return ""
-    keywords = {"remote", "hybrid", "in-person", "on-site", "on site"}
-    for div in container.select("div"):
-        text = div.get_text(strip=True).lower()
-        if text in keywords:
-            return text
-    return ""
-
-
-def _bs_apply_type(soup: BeautifulSoup) -> str:
-    btn = soup.select_one('button[aria-label*="Apply on company site"]')
-    return "CS Apply" if btn else "Easy Apply"
-
-
-def _bs_external_apply_link(soup: BeautifulSoup) -> str:
-    btn = soup.select_one('button[aria-label*="Apply on company site"]')
-    if btn:
-        return btn.get("href", "")
-    return ""
-
-def _bs_rating_and_reviews(soup: BeautifulSoup) -> dict:
-    """
-    Rating/review-count live in two different DOM shapes depending on
-    which viewjob template Indeed served:
-
-      - Legacy template: `.jobsearch-CompanyReview` wraps a
-        div[role="img"] (rating) and a span.css-1t3rggk (review count).
-      - New RNW template (2026, css-g5y9jx / r-* classes): a bare
-        div[aria-label="X out of 5 stars"] with NO wrapping container at
-        all — .jobsearch-CompanyReview doesn't exist in this template,
-        so the old selector silently returned 0.0/0 for every job on it.
-        The review count usually isn't present in this header on the new
-        template (it's on a separate "Company" tab), so we only recover
-        it here if it happens to be folded into the same aria-label.
-    """
-    rating = 0.0
-    review_count = 0
-
-    # ── New RNW template ────────────────────────────────────────────────
-    rating_el = soup.select_one('[aria-label*="out of 5 stars"]')
-    if rating_el:
-        aria_label = rating_el.get("aria-label", "")
-        m = re.search(r'(\d+\.?\d*)\s*out of 5 stars', aria_label)
-        if m:
-            rating = float(m.group(1))
-        else:
-            text = rating_el.get_text(strip=True)
-            try:
-                rating = float(text)
-            except ValueError:
-                pass
-
-        m2 = re.search(r'([\d,]+)\s+(?:company\s+)?reviews?', aria_label, re.IGNORECASE)
-        if m2:
-            review_count = int(m2.group(1).replace(",", ""))
-
-    # ── Legacy template fallback ────────────────────────────────────────
-    review_block = soup.select_one(".jobsearch-CompanyReview")
-    if review_block:
-        if not rating:
-            rating_div = review_block.select_one('div[role="img"]')
-            if rating_div:
-                m = re.search(r'(\d+\.?\d*)', rating_div.get("aria-label", ""))
-                if m:
-                    rating = float(m.group(1))
-        if not review_count:
-            count_span = review_block.select_one("span.css-1t3rggk")
-            if count_span:
-                m = re.search(r'(\d+)', count_span.get_text(strip=True))
-                if m:
-                    review_count = int(m.group(1))
-
-    return {"rating": rating, "review_count": review_count}
-
-
-
-def _bs_posted_date(html: str) -> tuple[str, str]:
-    posted_at = ""
-    posting_date_parsed = ""
-    date_on_indeed: int | None = None
-
-    match = re.search(r'"datePublished":(\d+)', html)
-    if match:
-        date_on_indeed = int(match.group(1))
-
-    if date_on_indeed:
-        posting_date_parsed = (
-            datetime.fromtimestamp(date_on_indeed / 1000, tz=timezone.utc)
-            .isoformat(timespec="milliseconds")
-            .replace("+00:00", "Z")
-        )
-
-    age_match = re.search(r'"age":"([^"]+)"', html)
-    if age_match:
-        posted_at = age_match.group(1)
-
-    return posted_at, posting_date_parsed
-
-
-def _compute_posting_age(posting_date_parsed: str, posted_at_text: str, scraped_at: datetime) -> dict:
-    """
-    Exact elapsed time since posting, in whole hours and days — computed
-    from real UTC timestamps rather than trusting Indeed's own 'age' text,
-    which is day-rounded once a job is more than ~24h old (so "3 days ago"
-    could be anywhere from 3d0h to 3d23h).
-
-    Prefers postingDateParsed (derived from the page's datePublished
-    epoch-ms field). Falls back to a best-effort parse of the 'age' text
-    when no timestamp was extracted for this job. Returns {} if neither
-    source yields a usable value — callers should treat that as "unknown",
-    not zero.
-    """
-    posted_dt = None
-
-    if posting_date_parsed:
-        try:
-            posted_dt = datetime.fromisoformat(posting_date_parsed.replace("Z", "+00:00"))
-        except ValueError:
-            posted_dt = None
-
-    if posted_dt is None and posted_at_text:
-        text = posted_at_text.strip().lower()
-        if "just posted" in text or text == "today":
-            return {"postingAgeHours": 0, "postingAgeDays": 0}
-        m = re.search(r"(\d+)\+?\s*hour", text)
-        if m:
-            hours = int(m.group(1))
-            return {"postingAgeHours": hours, "postingAgeDays": hours // 24}
-        m = re.search(r"(\d+)\+?\s*day", text)
-        if m:
-            days = int(m.group(1))
-            return {"postingAgeHours": days * 24, "postingAgeDays": days}
-        return {}
-
-    if posted_dt is None:
-        return {}
-
-    delta = scraped_at - posted_dt
-    total_hours = max(0, int(delta.total_seconds() // 3600))
-    return {"postingAgeHours": total_hours, "postingAgeDays": total_hours // 24}
-
-
-def _bs_is_expired(soup: BeautifulSoup) -> bool:
-    for el in soup.find_all(string=True):
-        if "<!-- -->This job has expired on Indeed<!-- -->" in el:
-            return True
-    return False
-
-
-def _backfill_from_dom(data: dict, soup: BeautifulSoup, html: str) -> None:
-    """
-    Fill in fields the embedded-JSON parser doesn't produce at all.
-    Only overwrites a field when it's currently empty/zero, so it never
-    clobbers a real value the JSON path already gave us.
-    """
-    if not data.get("benefits"):
-        data["benefits"] = _bs_benefits(soup)
-
-    if not data.get("applyType"):
-        data["applyType"] = _bs_apply_type(soup)
-
-    if not data.get("externalApplyLink"):
-        data["externalApplyLink"] = _bs_external_apply_link(soup)
-
-    if not data.get("companyIndeedUrl"):
-        data["companyIndeedUrl"] = _bs_company_indeed_url(soup)
-
-    rr = _bs_rating_and_reviews(soup)
-    if not data.get("rating"):
-        data["rating"] = float(rr.get("rating") or 0)
-    if not data.get("reviewsCount"):
-        data["reviewsCount"] = int(rr.get("review_count") or 0)
-
-    if not data.get("postingDateParsed"):
-        posted_at, posting_date_parsed = _bs_posted_date(html)
-        data["postedAt"] = data.get("postedAt") or posted_at
-        data["postingDateParsed"] = posting_date_parsed
-
-    # isRemote: the embedded-JSON path only sets "Remote" or "" (never
-    # "Hybrid"/"On-site"), so re-run the same remote-status logic the DOM
-    # path uses whenever we don't already have a confident "Remote".
-    if data.get("isRemote") != "Remote":
-        remote_badge = _bs_remote_badge(soup)
-        data["isRemote"] = check_remote_status(
-            data.get("description", ""), data.get("location", ""), remote_badge
-        )
-
+from . import helpers
+from .parse_indeed_rootprops import parse_indeed_job
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
@@ -329,8 +34,7 @@ def _backfill_from_dom(data: dict, soup: BeautifulSoup, html: str) -> None:
 async def process_filter_jobs(
     url: str,
     percentage: float,
-    config: ScraperConfig,
-    filter_queue: asyncio.Queue,
+    config: helpers.ScraperConfig,
     session: aiohttp.ClientSession,
 ) -> bool:
     """
@@ -346,7 +50,7 @@ async def process_filter_jobs(
     data["searchInput/location"] = config.search_location
     data["searchInput/position"] = config.about_me
 
-    # ── Fetch with retries ────────────────────────────────────────────────────
+    # ── Fetch with retries ──────────────────────────────────────────────
     html: str | None = None
     for net_attempt in range(ScraperSettings.MAX_RETRIES):
         try:
@@ -360,182 +64,67 @@ async def process_filter_jobs(
                 )
 
     if html is None:
-        # Network-level failure — re-queue as-is, don't touch the
-        # "no company found" retry counter, that's a separate concern.
         await config.release_slot()
         Actor.log.error(f"❌ All retries failed slot released: {url}")
         return False
 
-    # Parse once, reuse everywhere (ignore-keyword filter, expired check,
-    # embedded-JSON backfill, and the DOM fallback all share this soup).
-    soup = BeautifulSoup(html, "lxml")
+    soup_text = html.lower()  # cheap membership check, no DOM parse needed
 
-    # ── Ignore-related keyword filter ─────────────────────────────────────────
+    # ── Ignore-related keyword filter ───────────────────────────────────
     if config.ignore_related:
-        soup_text = soup.get_text(" ", strip=True).lower()
-        matched_kw = next((kw for kw in config.ignore_related if kw in soup_text), None)
+        matched_kw = next((kw for kw in config.ignore_related if kw.lower() in soup_text), None)
         if matched_kw:
             Actor.log.info(f"⏭ Skipped (ignore_related, matched: '{matched_kw}'): {url}")
             if config.skip_ignore_related_jobs:
                 await config.release_slot()
                 return False
 
-    # Expired
-    is_expired = _bs_is_expired(soup)
-    data["isExpired"] = True if is_expired else False
-    if is_expired and config.skip_expired_jobs:
+    # ── Parse everything from the embedded GraphQL job object ──────────
+    job = parse_indeed_job(html)
+
+    if job.get("expired") and config.skip_expired_jobs:
         Actor.log.info(f"⏭ Skipped (expired): {url}")
         await config.release_slot()
         return False
 
-    # ── Try embedded JSON first (fastest path) ────────────────────────────────
-    job = parse_indeed_job_from_embedded_json(html)
+    data["isExpired"]         = bool(job.get("expired"))
+    data["id"]                = job.get("job_id") or ""
+    data["positionName"]      = job.get("title") or ""
+    data["company"]           = job.get("company") or ""
+    data["companyIndeedUrl"]  = job.get("company_url") or ""
+    data["location"]          = job.get("location") or ""
+    data["salary"]            = job.get("salary") or ""
+    data["jobType"]           = job.get("job_type") or ""
+    data["isRemote"]          = job.get("remote_type") or ("Remote" if job.get("is_remote") else "")
+    data["postedAt"]          = job.get("posted_age_text") or ""
+    data["postingDateParsed"] = job.get("date_posted_iso") or ""
+    data["description"]       = job.get("description_text") or ""
+    data["descriptionHTML"]   = job.get("description_html") or ""
+    data["externalApplyLink"] = job.get("apply_url") or ""
+    data["applyType"]         = job.get("apply_type") or ""
+    data["benefits"]          = "\n".join(job.get("benefits") or [])
+    data["rating"]            = float(job.get("rating") or 0)
+    data["reviewsCount"]      = int(job.get("review_count") or 0)
 
-    if job["title"]:
-        data["positionName"]      = job["title"] or ""
-        data["company"]           = job["company"] or ""
-        data["location"]          = job["location"] or ""
-        data["salary"]            = job["salary"] or ""
-        data["jobType"]           = job["job_type"] or ""
-        data["isRemote"]          = "Remote" if job["is_remote"] else ""
-        data["postedAt"]          = job["posted_age_text"] or ""
-        data["description"]       = job["description_text"] or ""
-        data["descriptionHTML"]   = job["description_html"] or ""
-        data["externalApplyLink"] = job["apply_url"] or ""
-        data["id"]                = job["job_id"] or ""
-
-        if not data["id"]:
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-            data["id"] = params.get("jk", [""])[0]
-
-        # Backfill everything the embedded-JSON parser never produces:
-        # benefits, applyType, rating/reviewsCount, companyIndeedUrl,
-        # postingDateParsed, and a proper isRemote value (Hybrid/On-site,
-        # not just Remote/""). Reuses the soup already parsed above —
-        # no second BeautifulSoup(html, "lxml") call.
-        _backfill_from_dom(data, soup, html)
-
-        data.update(_compute_posting_age(
-            data.get("postingDateParsed", ""),
-            data.get("postedAt", ""),
-            datetime.fromisoformat(data["scrapedAt"]),
-        ))
-
-        data["searchInput"] = {
-            "country":  data["searchInput/country"],
-            "location": data["searchInput/location"],
-            "position": data["searchInput/position"],
-        }
-
-        try:
-            await push_job_data(data, config)
-            await config.increment_pushed(1)
-            Actor.log.info(
-                f"✅ Extracted (json+backfill): {data['positionName']} @ {data['company']}"
-                + (f" → {percentage}%" if config.ai_matching_enabled else "")
-                + f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
-            )
-            return True
-        except Exception as e:
-            Actor.log.error(f"❌ Push failed (json): {url} | {e}")
-            return False
-
-    # ── DOM fallback (BeautifulSoup) ──────────────────────────────────────────
-    try:
-        # Page title check
-        page_title = (soup.find("title") or "")
-        page_title_text = page_title.get_text(strip=True).lower() if hasattr(page_title, "get_text") else ""
-        if "not found" in page_title_text:
-            Actor.log.info(f"⏭ Job removed/expired: {url}")
-            await config.release_slot()
-            return False
-
-        # Company — point 6: retry up to COMPANY_RETRY_LIMIT times before
-        # giving up. The slot stays held (no release_slot()) while retries
-        # remain, since the job may still succeed.
-        company = _bs_company(soup)
-        if not company:
-            await config.release_slot()
-            await save_debug_page(
-                html, url, session, config=config,
-                tag="no_company_found", with_screenshot=True,
-            )
-            return False
-        data["company"] = company
-
-        # Position name
-        title_el = soup.select_one('[data-testid="jobsearch-JobInfoHeader-title"] span')
-        if not title_el:
-            Actor.log.warning(f"⚠️ No position title found: {url}")
-            return False
-        data["positionName"]         = title_el.get_text(strip=True)
-        data["searchInput/position"] = data["positionName"]
-
-        # Salary & job type
-        salary, job_types = _bs_salary_and_job_types(soup)
-        data["salary"]  = salary
-        data["jobType"] = ", ".join(job_types)
-
-        # Location
-        data["location"] = _bs_location(soup)
-
-        # Apply type
-        data["applyType"] = _bs_apply_type(soup)
-
-        # External apply link
-        data["externalApplyLink"] = _bs_external_apply_link(soup)
-
-        # Benefits
-        data["benefits"] = _bs_benefits(soup)
-
-        # Description
-        data["description"], data["descriptionHTML"] = _bs_description(soup)
-
-        # Remote status
-        remote_badge = _bs_remote_badge(soup)
-        data["isRemote"] = check_remote_status(data["description"], data["location"], remote_badge)
-
-        # Job ID
+    if not data["id"]:
         params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         data["id"] = params.get("jk", [""])[0]
-        if not data["id"]:
-            Actor.log.warning(f"⚠️ No job_id found: {url}")
 
-        # Posted date
-        data["postedAt"], data["postingDateParsed"] = _bs_posted_date(html)
+    data["searchInput"] = {
+        "country":  data["searchInput/country"],
+        "location": data["searchInput/location"],
+        "position": data["searchInput/position"],
+    }
 
-        # Rating & reviews
-        rr = _bs_rating_and_reviews(soup)
-        data["rating"]       = float(rr.get("rating") or 0)
-        data["reviewsCount"] = int(rr.get("review_count") or 0)
-
-        # Company Indeed URL
-        data["companyIndeedUrl"] = _bs_company_indeed_url(soup)
-
-        # Exact posting age (see _compute_posting_age docstring)
-        data.update(_compute_posting_age(
-            data.get("postingDateParsed", ""),
-            data.get("postedAt", ""),
-            datetime.fromisoformat(data["scrapedAt"]),
-        ))
-
-        # Search input composite
-        data["searchInput"] = {
-            "country":  data["searchInput/country"],
-            "location": data["searchInput/location"],
-            "position": data["searchInput/position"],
-        }
-
-        await push_job_data(data, config)
+    try:
+        await helpers.push_job_data(data, config)
         await config.increment_pushed(1)
         Actor.log.info(
-            f"✅ Extracted (dom): {data['positionName']} @ {data['company']}"
+            f"✅ Extracted: {data['positionName']} @ {data['company']}"
             + (f" → {percentage}%" if config.ai_matching_enabled else "")
             + f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
         )
         return True
-
     except Exception as e:
-        Actor.log.error(f"❌ Extraction failed: {url} | {e}")
-        await config.release_slot()
+        Actor.log.error(f"❌ Push failed (json): {url} | {e}")
         return False
