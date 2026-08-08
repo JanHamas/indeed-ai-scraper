@@ -37,7 +37,7 @@ class ScraperSettings:
         "quaid": "fc-3cdff0dc42624fb09ad0ce67b3ad8d78",
     }
 
-    FREE_TIER_MAX_JOBS = 25
+    FREE_TIER_MAX_JOBS = 4000
 
     EMAIL="hamasjan82@gmail.com"
     EMAIL_PASSWORD="fbqzdwrtfkaqjjij"
