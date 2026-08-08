@@ -35,6 +35,8 @@ class ScraperSettings:
         "hamasjan822": "fc-6e047438346e422f8802cbd63a17eaab",
         "hamasjan154": "fc-556807af182d405ba6775a6c18c0b564",
         "quaid": "fc-3cdff0dc42624fb09ad0ce67b3ad8d78",
+        "shayan": "fc-78cfc465ef9a416aaceecc8b6a4ac38b",
+        "hamasjan799": "fc-a0de9c553ae342e8a43f692d8d29f8af"
     }
 
     FREE_TIER_MAX_JOBS = 25

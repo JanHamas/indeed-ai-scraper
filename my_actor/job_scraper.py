@@ -154,25 +154,60 @@ def _bs_external_apply_link(soup: BeautifulSoup) -> str:
         return btn.get("href", "")
     return ""
 
-
 def _bs_rating_and_reviews(soup: BeautifulSoup) -> dict:
-    review_block = soup.select_one(".jobsearch-CompanyReview")
-    if not review_block:
-        return {"rating": 0.0, "review_count": 0}
+    """
+    Rating/review-count live in two different DOM shapes depending on
+    which viewjob template Indeed served:
+
+      - Legacy template: `.jobsearch-CompanyReview` wraps a
+        div[role="img"] (rating) and a span.css-1t3rggk (review count).
+      - New RNW template (2026, css-g5y9jx / r-* classes): a bare
+        div[aria-label="X out of 5 stars"] with NO wrapping container at
+        all — .jobsearch-CompanyReview doesn't exist in this template,
+        so the old selector silently returned 0.0/0 for every job on it.
+        The review count usually isn't present in this header on the new
+        template (it's on a separate "Company" tab), so we only recover
+        it here if it happens to be folded into the same aria-label.
+    """
     rating = 0.0
-    rating_div = review_block.select_one('div[role="img"]')
-    if rating_div:
-        aria_label = rating_div.get("aria-label", "")
-        m = re.search(r'(\d+\.?\d*)', aria_label)
+    review_count = 0
+
+    # ── New RNW template ────────────────────────────────────────────────
+    rating_el = soup.select_one('[aria-label*="out of 5 stars"]')
+    if rating_el:
+        aria_label = rating_el.get("aria-label", "")
+        m = re.search(r'(\d+\.?\d*)\s*out of 5 stars', aria_label)
         if m:
             rating = float(m.group(1))
-    review_count = 0
-    count_span = review_block.select_one("span.css-1t3rggk")
-    if count_span:
-        m = re.search(r'(\d+)', count_span.get_text(strip=True))
-        if m:
-            review_count = int(m.group(1))
+        else:
+            text = rating_el.get_text(strip=True)
+            try:
+                rating = float(text)
+            except ValueError:
+                pass
+
+        m2 = re.search(r'([\d,]+)\s+(?:company\s+)?reviews?', aria_label, re.IGNORECASE)
+        if m2:
+            review_count = int(m2.group(1).replace(",", ""))
+
+    # ── Legacy template fallback ────────────────────────────────────────
+    review_block = soup.select_one(".jobsearch-CompanyReview")
+    if review_block:
+        if not rating:
+            rating_div = review_block.select_one('div[role="img"]')
+            if rating_div:
+                m = re.search(r'(\d+\.?\d*)', rating_div.get("aria-label", ""))
+                if m:
+                    rating = float(m.group(1))
+        if not review_count:
+            count_span = review_block.select_one("span.css-1t3rggk")
+            if count_span:
+                m = re.search(r'(\d+)', count_span.get_text(strip=True))
+                if m:
+                    review_count = int(m.group(1))
+
     return {"rating": rating, "review_count": review_count}
+
 
 
 def _bs_posted_date(html: str) -> tuple[str, str]:
