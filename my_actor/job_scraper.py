@@ -29,8 +29,14 @@ from .parse_indeed_embedded_json import parse_indeed_job_from_embedded_json
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BeautifulSoup fallback extractors (mirrors Playwright DOM selectors)
+# BeautifulSoup extractors and fallbacks json embedded
 # ─────────────────────────────────────────────────────────────────────────────
+# These are used in two places:
+#   1. As the ONLY extraction path when the embedded-JSON (ld+json /
+#      _rootProps) parse fails or is missing a title.
+#   2. As BACKFILL for fields the embedded-JSON parser doesn't cover at all
+#      (benefits, applyType, rating/reviewsCount, companyIndeedUrl,
+#      postingDateParsed) — so the fast path no longer silently drops them.
 
 def _bs_company(soup: BeautifulSoup) -> str:
     for sel in [
@@ -178,6 +184,45 @@ def _bs_is_expired(soup: BeautifulSoup) -> bool:
     return False
 
 
+def _backfill_from_dom(data: dict, soup: BeautifulSoup, html: str) -> None:
+    """
+    Fill in fields the embedded-JSON parser doesn't produce at all.
+    Only overwrites a field when it's currently empty/zero, so it never
+    clobbers a real value the JSON path already gave us.
+    """
+    if not data.get("benefits"):
+        data["benefits"] = _bs_benefits(soup)
+
+    if not data.get("applyType"):
+        data["applyType"] = _bs_apply_type(soup)
+
+    if not data.get("externalApplyLink"):
+        data["externalApplyLink"] = _bs_external_apply_link(soup)
+
+    if not data.get("companyIndeedUrl"):
+        data["companyIndeedUrl"] = _bs_company_indeed_url(soup)
+
+    rr = _bs_rating_and_reviews(soup)
+    if not data.get("rating"):
+        data["rating"] = float(rr.get("rating") or 0)
+    if not data.get("reviewsCount"):
+        data["reviewsCount"] = int(rr.get("review_count") or 0)
+
+    if not data.get("postingDateParsed"):
+        posted_at, posting_date_parsed = _bs_posted_date(html)
+        data["postedAt"] = data.get("postedAt") or posted_at
+        data["postingDateParsed"] = posting_date_parsed
+
+    # isRemote: the embedded-JSON path only sets "Remote" or "" (never
+    # "Hybrid"/"On-site"), so re-run the same remote-status logic the DOM
+    # path uses whenever we don't already have a confident "Remote".
+    if data.get("isRemote") != "Remote":
+        remote_badge = _bs_remote_badge(soup)
+        data["isRemote"] = check_remote_status(
+            data.get("description", ""), data.get("location", ""), remote_badge
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,11 +263,12 @@ async def process_filter_jobs(
     if html is None:
         # Network-level failure — re-queue as-is, don't touch the
         # "no company found" retry counter, that's a separate concern.
-        await filter_queue.put((url, percentage))
-        Actor.log.error(f"❌ All retries failed, re-queued: {url}")
+        await config.release_slot()
+        Actor.log.error(f"❌ All retries failed slot released: {url}")
         return False
 
-    # Parse once, reuse everywhere
+    # Parse once, reuse everywhere (ignore-keyword filter, expired check,
+    # embedded-JSON backfill, and the DOM fallback all share this soup).
     soup = BeautifulSoup(html, "lxml")
 
     # ── Ignore-related keyword filter ─────────────────────────────────────────
@@ -242,7 +288,7 @@ async def process_filter_jobs(
         Actor.log.info(f"⏭ Skipped (expired): {url}")
         await config.release_slot()
         return False
-    
+
     # ── Try embedded JSON first (fastest path) ────────────────────────────────
     job = parse_indeed_job_from_embedded_json(html)
 
@@ -263,6 +309,13 @@ async def process_filter_jobs(
             params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             data["id"] = params.get("jk", [""])[0]
 
+        # Backfill everything the embedded-JSON parser never produces:
+        # benefits, applyType, rating/reviewsCount, companyIndeedUrl,
+        # postingDateParsed, and a proper isRemote value (Hybrid/On-site,
+        # not just Remote/""). Reuses the soup already parsed above —
+        # no second BeautifulSoup(html, "lxml") call.
+        _backfill_from_dom(data, soup, html)
+
         data["searchInput"] = {
             "country":  data["searchInput/country"],
             "location": data["searchInput/location"],
@@ -273,7 +326,7 @@ async def process_filter_jobs(
             await push_job_data(data, config)
             await config.increment_pushed(1)
             Actor.log.info(
-                f"✅ Extracted (json): {data['positionName']} @ {data['company']}"
+                f"✅ Extracted (json+backfill): {data['positionName']} @ {data['company']}"
                 + (f" → {percentage}%" if config.ai_matching_enabled else "")
                 + f"  |  pushed: {config.pushed_jobs}/{config.max_jobs}"
             )
@@ -284,8 +337,6 @@ async def process_filter_jobs(
 
     # ── DOM fallback (BeautifulSoup) ──────────────────────────────────────────
     try:
-        soup = BeautifulSoup(html, "lxml")
-
         # Page title check
         page_title = (soup.find("title") or "")
         page_title_text = page_title.get_text(strip=True).lower() if hasattr(page_title, "get_text") else ""

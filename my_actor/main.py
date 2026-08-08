@@ -322,6 +322,11 @@ async def _scrape(config) -> None:
     n_primary    = 1 if n_listing <= 5 else 2
     n_hybrid     = n_listing - n_primary
 
+    if config.max_jobs >= 400 and (len(config.url_queue) >= 4 or len(config.search_keywords) >= 4):
+        # Big run — double up hybrid workers, but keep total listing
+        # workers (primary + hybrid) within MAX_LISTING_WORKERS.
+        n_hybrid = min(n_listing * 2 - n_primary, ScraperSettings.MAX_LISTING_WORKERS - n_primary)
+
     connector = aiohttp.TCPConnector(
         limit=concurrency * 4,
         limit_per_host=concurrency * 2,
